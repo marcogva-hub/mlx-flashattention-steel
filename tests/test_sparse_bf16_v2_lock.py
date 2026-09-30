@@ -30,6 +30,14 @@ pytestmark = pytest.mark.skipif(
     not _get_is_m5_plus_cached(),
     reason="bf16 sparse V2/NAX lock asserts M5+ kernels")
 
+
+@pytest.fixture(autouse=True)
+def _legacy_263_policy(monkeypatch):
+    """2.64: this file locks the EXACT 2.63 measured envelope.  It now runs under
+    MFA_SPARSE_NAX_LEGACY_POLICY=1, which must reproduce 2.63 cell for cell (the
+    promoted default law is locked by tests/test_264_sparse_promotion.py)."""
+    monkeypatch.setenv("MFA_SPARSE_NAX_LEGACY_POLICY", "1")
+
 try:
     from mlx_mfa._ext import sparse_attention_forward
     _HAVE = True

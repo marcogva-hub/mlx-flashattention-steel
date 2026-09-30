@@ -78,6 +78,7 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
     "MFA_LCSA_KERNEL_VERSION",
     "MFA_NAX_SPARSE_DENSITY_CEILING",
     "MFA_SPARSE_FALLBACK_MAX_BYTES",  # 2.64 B1: max bool keep-mask the sparse SDPA fallback may build (4 GiB)
+    "MFA_SPARSE_NAX_LEGACY_POLICY",  # 2.64 B4: restore the 2.63 sparse NAX routing policy (one release)
     "MFA_SPARSE_NAX_EXTENDED",  # Volet A opt-in (M5+): extend the sparse route past
     #   the measured policy region (B·H/N/density); capacity still enforced. Default-off.
     "MFA_SPARSE_D_DENSE_CUTOFF",  # Volet A: block density at/above which the extended
@@ -206,7 +207,8 @@ BOOL_KNOBS: frozenset[str] = frozenset({
     "MFA_FORCE_V2", "MFA_GNA_NAX_PRECOMPUTE_RANGE", "MFA_HOOK_VERBOSE",
     "MFA_KNOB_STRICT", "MFA_NO_PADDING",
     "MFA_PAGED_TRUST_INDICES", "MFA_REQUIRE_NAX", "MFA_SILENCE_NAX_WARNING",
-    "MFA_SPARSE_NAX_EXTENDED",  # RC 2.63.0 (D2): strict 0/1 like every boolean knob
+    "MFA_SPARSE_NAX_EXTENDED",  # RC 2.63.0 (D2): strict 0/1; 2.64: deprecated no-op
+    "MFA_SPARSE_NAX_LEGACY_POLICY",
     "MFA_UNSAFE_D128_SPARSE", "MFA_V2_BQ64", "MFA_V6BWD_USE_FUSED",
     "MFA_V6BWD_DUMP_SOURCE", "MFA_V6BWDF_DUMP_SOURCE",
     "MFA_V6_BNHD_LEGACY", "MFA_V6_BWD_SPARSE_NATIVE", "MFA_V6_BYPASS_TGP",

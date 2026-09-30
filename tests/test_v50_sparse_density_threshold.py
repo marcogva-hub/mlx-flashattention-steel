@@ -108,7 +108,9 @@ def test_v50_sprint1_mid_density_routes_sdpa_under_hardened_gate():
 
 @pytest.mark.skipif(not _HAS_NAX, reason="LCSA NAX requires M5+ hardware.")
 def test_v50_sprint1_high_density_routes_sdpa_under_hardened_gate():
-    """density=0.95 is outside the measured map and delegates to SDPA."""
+    """2.64 B6 (D2): density=0.95 >= D_DENSE_CUTOFF now takes the V6NAX kernel whenever it
+    can serve the call (the best measured arm near-dense); an explicit
+    density_threshold=0.0 still forces the SDPA path.  (2.63: delegated to SDPA.)"""
     B, H, qL, D, BT = 1, 4, 4096, 128, 32
     NQ = NK = qL // BT
     q = mx.random.normal((B, H, qL, D)).astype(mx.float16)
@@ -128,10 +130,13 @@ def test_v50_sprint1_high_density_routes_sdpa_under_hardened_gate():
         q, k, v, block_mask, block_tile=BT, scale=D**-0.5,
         density_threshold=0.0,
     )
-    _flush(out_dispatch, out_forced_sdpa); mx.synchronize()
+    from mlx_mfa.lcsa_nax import sparse_attention_nax
+    out_kernel = sparse_attention_nax(q, k, v, block_mask, block_tile=BT, scale=D**-0.5)
+    _flush(out_dispatch, out_forced_sdpa, out_kernel); mx.synchronize()
+    assert bool(mx.array_equal(out_dispatch, out_kernel)), "B6: dispatch did not run V6NAX"
     max_diff = float(mx.max(mx.abs(
         out_dispatch.astype(mx.float32) - out_forced_sdpa.astype(mx.float32))))
-    assert max_diff == 0.0
+    assert 0.0 < max_diff < 1e-2, max_diff      # a different real kernel, same operator
 
 
 @pytest.mark.skipif(not _HAS_NAX, reason="LCSA NAX requires M5+ hardware.")

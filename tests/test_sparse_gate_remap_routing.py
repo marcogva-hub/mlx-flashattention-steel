@@ -19,6 +19,14 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def _legacy_263_policy(monkeypatch):
+    """2.64: this file locks the EXACT 2.63 measured envelope.  It now runs under
+    MFA_SPARSE_NAX_LEGACY_POLICY=1, which must reproduce 2.63 cell for cell (the
+    promoted default law is locked by tests/test_264_sparse_promotion.py)."""
+    monkeypatch.setenv("MFA_SPARSE_NAX_LEGACY_POLICY", "1")
+
+
 class _FakeArray:
     def __init__(self, B, H, N, D, dtype):
         self.shape = (B, H, N, D)

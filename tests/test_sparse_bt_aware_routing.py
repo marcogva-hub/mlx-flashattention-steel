@@ -37,8 +37,12 @@ def _mask(N, BT, density, seed=0):
 
 def test_constants_documented_window():
     assert L.SPARSE_NAX_VIABLE_BLOCK_TILES == frozenset({32})
-    assert L.SPARSE_NAX_MEASURED_BH == frozenset({1, 4, 12})
-    assert L.SPARSE_NAX_MIN_N == 4096
+    # 2.64 B4: the non-causal law (N in [2048, 200000], any B*H); the 2.63 window stays
+    # under the legacy knob (MFA_SPARSE_NAX_LEGACY_POLICY=1) for one release.
+    assert L.SPARSE_NAX_MIN_N == 2048 and L.SPARSE_NAX_MAX_N == 200_000
+    assert L.SPARSE_NAX_MEASURED_BH_COVERAGE == frozenset({1, 4, 12, 16, 32, 40, 56})
+    assert L.SPARSE_NAX_MEASURED_BH == frozenset({1, 4, 12})          # legacy policy only
+    assert (L._LEGACY_MIN_N, L._LEGACY_MAX_N) == (4096, 8192)
     assert L.SPARSE_NAX_CAUSAL_MIN_N == 4096
     assert L.SPARSE_NAX_CAUSAL_MAX_N == 8192
     assert L.SPARSE_NAX_CAUSAL_MAX_BH == 12

@@ -143,11 +143,11 @@ def sla_attention(
                 Linear(D,D)); None → identity (untrained/test).
         scale: sparse-term softmax scale (default 1/sqrt(D)).
         causal: NOT supported (thu-ml SLA is non-causal); raises.
-        extended: run the sparse term on the Volet A extended path, so the block-skip
-                  is reachable at B·H/N beyond the default gate.  None (default) = on
-                  M5+ only (the extended path refuses pre-M5 chips); True forces it on
-                  (raises pre-M5); False forces it off, even if MFA_SPARSE_NAX_EXTENDED=1.
-                  The choice is context-local (no os.environ mutation).
+        extended: 2.64 — kept for compatibility, no routing effect: the Volet A
+                  extended envelope IS the default sparse law now (any B·H, N up to
+                  200000, auto_pad), so the sparse term reaches the block-skip without
+                  it.  ``True`` still raises pre-M5 (its documented contract); ``None``
+                  and ``False`` are equivalent.
 
     Returns:
         (B, H, L, D) = o_sparse + proj_l(o_linear).
@@ -173,10 +173,14 @@ def sla_attention(
     nq32 = (L + BT - 1) // BT
     bm32 = _expand_to_bt32(sparse_map, blkq, blkk, nq32, nq32)
 
-    # 3. sparse term — the Volet A extended path (block-skip, auto_pad).
+    # 3. sparse term — the default sparse law (2.64: the former Volet A extended
+    #    envelope), block-skip + auto_pad.
     from mlx_mfa.attention import _get_is_m5_plus_cached
-    from mlx_mfa.lcsa_nax import _extended_override
-    use_extended = _get_is_m5_plus_cached() if extended is None else bool(extended)
+    if extended is True and not _get_is_m5_plus_cached():
+        raise RuntimeError(
+            "sla_attention(extended=True) requires M5+ (NAX) hardware; this chip is "
+            "pre-M5 where STEEL sparse is backlog. Use extended=None for the default "
+            "routing (graceful SDPA fallback).")
     n_blocks_k = -(-L // blkk)
     if min(n_blocks_k, int(topk_ratio * n_blocks_k)) <= 0:
         # top-k selects NO block: the sparse term is exactly 0 (the reference's
@@ -184,9 +188,8 @@ def sla_attention(
         # (opened by extended=None) all-empty rows came back NaN (RC review, D1).
         o_s = mx.zeros(q.shape[:-1] + (vf.shape[-1],), dtype=q.dtype)
     else:
-        with _extended_override(use_extended):
-            o_s = flash_attention_sparse(q, kf, vf, bm32, scale=scale, causal=False,
-                                         auto_pad=True)
+        o_s = flash_attention_sparse(q, kf, vf, bm32, scale=scale, causal=False,
+                                     auto_pad=True)
 
     # 4-5. linear term over ALL keys + learned projection.
     o_l = _linear_term(q, kf, vf, feature_map)

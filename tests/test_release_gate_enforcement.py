@@ -51,7 +51,9 @@ def _read(p: Path) -> str:
 # M5 surface still covered.
 # 84 -> 85: added tests/test_264_dense_delegation.py (2.64 D1/A2/A4: dense D=128 auto
 # delegates to SDPA byte-identically, measured tile table, truthful terminal log).
-_EXPECTED_M5_SKIP_SITES = 85
+# 85 -> 86: added tests/test_264_dense_tile_priors.py (2.64 A3: on-device tile-prior
+# calibration, activation only via MLX_MFA_DISPATCH_TABLE).
+_EXPECTED_M5_SKIP_SITES = 86
 
 
 def _count_m5_skip_sites() -> int:

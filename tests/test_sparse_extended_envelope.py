@@ -84,27 +84,32 @@ def test_autopad_aligned_byte_identical():
     assert delta == 0.0, f"auto_pad no-op on aligned N must be byte-identical; maxabs={delta}"
 
 
-@m5only
 @pytest.mark.parametrize("causal", [False, True])
 def test_autopad_nonaligned_gold(monkeypatch, causal):
     """Gate 4b / §2(b): non-aligned N via auto_pad vs fp32 SDPA+element-mask, per-row gates.
-    The extended opt-in makes the padded kv_valid_len route run (asserted): at this mask
-    density (0.37 > the 0.30 default ceiling) the default policy takes the unpadded route."""
-    monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
+    2.64: the DEFAULT law routes the non-causal cell to the padded kv_valid_len kernel
+    (B*H12, d 0.20 <= 0.30); causal stays on the SDPA fallback by default (causal policy
+    unchanged) and the padded kernel is then locked directly (it serves the B1 rescue)."""
     B, H, N, D = 1, 12, 4100, 128           # 4100 % 32 = 4  → pad to 4128
     q, k, v = _qkv(B, H, N, D)
     nq = (N + BT - 1) // BT                  # ceil → 129
-    bm = _block_mask(nq, nq, 0.20)
+    bm = _block_mask(nq, nq, 0.10)           # symmetrised by the helper -> ~0.2
     mx.eval(bm)
+    from mlx_mfa.lcsa_nax import mask_density
+    assert mask_density(bm) <= 0.30, "premise: inside the kept 0.30 density ceiling"
     scale = 1.0 / math.sqrt(D)
     from mlx_mfa import _dispatch_trace as dt
     with dt.capture() as cap:
         o = flash_attention_sparse(q, k, v, bm, scale=scale, causal=causal, auto_pad=True)
         mx.eval(o)
-    assert any("kv_valid" in r[1] for r in cap), [r[:2] for r in cap]
+    gold = _gold(q, k, v, bm, scale, causal, N, N)
     assert o.shape == (B, H, N, D), f"output must be sliced to original N; got {o.shape}"
-    assert_row_gates(o, _gold(q, k, v, bm, scale, causal, N, N), **_G16,
-                     label=f"auto_pad(N={N},causal={causal})")
+    assert_row_gates(o, gold, **_G16, label=f"auto_pad(N={N},causal={causal})")
+    if not causal:
+        assert any("kv_valid" in r[1] for r in cap), [r[:2] for r in cap]
+    else:
+        ok = A._make_sparse_nax_padded_vjp(scale, True)(q, k, v, bm)
+        assert_row_gates(ok, gold, **_G16, label="padded kernel, causal")
 
 
 # ============================================ MFA_SPARSE_NAX_EXTENDED (§3)
@@ -116,18 +121,20 @@ def _shape_arr(B, H, N, D, dt=mx.float16):
 
 
 def test_extended_gate_bypasses_policy_not_capacity(monkeypatch):
-    """Gate 3 (unit): extended bypasses POLICY bounds (B·H/N) but NEVER capacity."""
+    """Gate 3 (unit), 2.64: the extended opt-in is a no-op; the default law bounds POLICY
+    (N >= 2048 here) and capacity is never bypassed.  Non-causal qL != kL is now inside
+    capacity (B5); causal qL != kL is not (U2)."""
     monkeypatch.delenv("MFA_SPARSE_NAX_EXTENDED", raising=False)
-    # Out-of-policy shape (B·H=40, tiny N): default gate rejects.
     q = _shape_arr(1, 40, 256, 128); k = q
-    assert _nax_sparse_route_viable(q, k, 32, 0.5) is False
+    assert _nax_sparse_route_viable(q, k, 32, 0.1) is False          # N < MIN_N
     monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
-    assert _sparse_extended_enabled() is True
-    assert _nax_sparse_route_viable(q, k, 32, 0.5) is True          # policy bypassed
-    # Capacity constraints are NEVER bypassed, even with the env on:
+    assert _sparse_extended_enabled() is False                       # no-op
+    assert _nax_sparse_route_viable(q, k, 32, 0.1) is False
     assert _nax_sparse_route_viable(_shape_arr(1, 4, 256, 256), _shape_arr(1, 4, 256, 256), 32, 0.1) is False  # D=256
-    assert _nax_sparse_route_viable(_shape_arr(1, 4, 4096, 128), _shape_arr(1, 4, 2048, 128), 32, 0.1) is False  # qL≠kL
-    assert _nax_sparse_route_viable(q, k, 64, 0.1) is False          # block_tile≠32
+    assert _nax_sparse_route_viable(_shape_arr(1, 8, 4096, 128), _shape_arr(1, 8, 2048, 128), 32, 0.1) is True   # B5
+    assert _nax_sparse_route_viable(_shape_arr(1, 8, 4096, 128), _shape_arr(1, 8, 2048, 128), 32, 0.1,
+                                    causal=True) is False            # U2
+    assert _nax_sparse_route_viable(_shape_arr(1, 12, 4096, 128), _shape_arr(1, 12, 4096, 128), 64, 0.1) is False  # tile
     assert _nax_sparse_route_viable(_shape_arr(1, 4, 256, 128, mx.float32),
                                     _shape_arr(1, 4, 256, 128, mx.float32), 32, 0.1) is False  # fp32
 
@@ -171,36 +178,40 @@ def test_offpath_byte_identical(monkeypatch):
     assert delta == 0.0, f"opt-in must not perturb in-envelope routing; maxabs={delta}"
 
 
-# ============================================ loud refusals (§1/§3, gate 5)
+@m5only
 def test_refusal_pre_m5_extended(monkeypatch):
-    """Chip < M5 under the opt-in → RuntimeError (never silent SDPA)."""
+    """2.64: the knob no longer refuses pre-M5 (it is a no-op); the documented pre-M5
+    refusal survives where it is an API contract — sla_attention(extended=True)."""
     monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
     monkeypatch.setattr(A, "_get_is_m5_plus_cached", lambda: False)
+    from mlx_mfa import sla
     q, k, v = _qkv(1, 4, 4096, 128)
-    bm = _block_mask(4096 // BT, 4096 // BT, 0.05)
     with pytest.raises(RuntimeError, match="requires M5"):
-        flash_attention_sparse(q, k, v, bm)
+        sla.sla_attention(q, k, v, topk_ratio=0.1, extended=True)
 
 
 def test_refusal_D256_extended(monkeypatch):
-    """D=256 under the opt-in → ValueError (out of v1 matrix)."""
+    """2.64: D=256 is no longer refused by the (retired) opt-in; the default path serves it
+    on the SDPA route (V6NAX sparse is D in {64, 128})."""
     monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
-    monkeypatch.setattr(A, "_get_is_m5_plus_cached", lambda: True)
     q, k, v = _qkv(1, 4, 4096, 256)
-    bm = _block_mask(4096 // BT, 4096 // BT, 0.05)
-    with pytest.raises(ValueError, match="head_dim must be 64 or 128"):
-        flash_attention_sparse(q, k, v, bm)
+    mx.random.seed(7)
+    bm = (mx.random.uniform(shape=(4096 // BT, 4096 // 16)) < 0.05) | mx.eye(4096 // BT, 4096 // 16, dtype=mx.bool_)
+    o = flash_attention_sparse(q, k, v, bm)
+    mx.eval(o)
+    assert bool(mx.all(mx.isfinite(o)).item())
 
 
 def test_refusal_bt_not_32_extended(monkeypatch):
-    """Mask implying BT != 32 under the opt-in → ValueError."""
+    """2.64: a BT=16 mask is no longer refused by the (retired) opt-in — it takes the
+    default route (the tile is not NAX-viable -> SDPA fallback)."""
     monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
-    monkeypatch.setattr(A, "_get_is_m5_plus_cached", lambda: True)
     N, D = 4096, 128
     q, k, v = _qkv(1, 4, N, D)
     bm16 = _block_mask(N // 16, N // 16, 0.05)          # BT=16 granularity
-    with pytest.raises(ValueError, match="block tile must be 32"):
-        flash_attention_sparse(q, k, v, bm16)
+    o = flash_attention_sparse(q, k, v, bm16)
+    mx.eval(o)
+    assert o.shape == (1, 4, N, D)
 
 
 def test_refusal_fp32_entry(monkeypatch):
@@ -225,11 +236,11 @@ def test_refusals_are_extended_only(monkeypatch):
     assert o.shape == (1, 4, N, D)
 
 
-# ============================================ D_DENSE_CUTOFF (§1 item 4, gate 7)
 @m5only
 def test_d_dense_cutoff_routes_dense(monkeypatch):
-    """d ≥ cutoff → dense masked route (byte-identical to the dense fallback);
-    below the cutoff → NAX route (differs from dense)."""
+    """2.64 B6: d >= cutoff -> the V6NAX kernel when it can serve the call (differs from the
+    dense fallback, oracle-correct); cutoff raised above d -> the 0.30 density ceiling
+    applies -> the dense (bool) fallback, byte-identical to it."""
     B, H, N, D = 1, 40, 4096, 128
     q, k, v = _qkv(B, H, N, D)
     bm = _block_mask(N // BT, N // BT, 0.9)          # symmetrized → ~0.99 ≥ 0.85
@@ -237,21 +248,18 @@ def test_d_dense_cutoff_routes_dense(monkeypatch):
     dens = float(mx.mean(bm.astype(mx.float32)).item())
     assert dens >= 0.85, f"test premise: near-dense mask, got {dens:.3f}"
     scale = 1.0 / math.sqrt(D)
-    monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
     o_dense = A._sparse_fallback_sdpa_perhead(q, k, v, bm, scale, False)
-    # default cutoff 0.85 → near-dense diverts to the dense route
     o_cut = flash_attention_sparse(q, k, v, bm, scale=scale)
     mx.eval(o_cut, o_dense)
-    d_dense = float(np.abs(np.asarray(o_cut.astype(mx.float32))
-                           - np.asarray(o_dense.astype(mx.float32))).max())
-    assert d_dense == 0.0, f"d≥cutoff must take the dense route; maxabs vs dense={d_dense}"
-    # raise the cutoff above the density → NAX route → differs from dense
-    monkeypatch.setenv("MFA_SPARSE_D_DENSE_CUTOFF", "1.01")
-    o_nax = flash_attention_sparse(q, k, v, bm, scale=scale)
-    mx.eval(o_nax)
-    d_nax = float(np.abs(np.asarray(o_nax.astype(mx.float32))
+    d_nax = float(np.abs(np.asarray(o_cut.astype(mx.float32))
                          - np.asarray(o_dense.astype(mx.float32))).max())
-    assert d_nax > 0.0, f"below cutoff must take the NAX route (differ from dense); got {d_nax}"
+    assert 0.0 < d_nax < 1e-2, f"d>=cutoff must take the V6NAX kernel (B6); maxabs vs dense={d_nax}"
+    monkeypatch.setenv("MFA_SPARSE_D_DENSE_CUTOFF", "1.01")
+    o_ceil = flash_attention_sparse(q, k, v, bm, scale=scale)
+    mx.eval(o_ceil)
+    d_dense = float(np.abs(np.asarray(o_ceil.astype(mx.float32))
+                           - np.asarray(o_dense.astype(mx.float32))).max())
+    assert d_dense == 0.0, f"above the ceiling, below the cutoff -> dense fallback; got {d_dense}"
 
 
 # ============================================ axis 1 — gold parity sample (gate 1)

@@ -16,6 +16,7 @@ D5  both entry points (flash_attention_sparse, sparse_attention_dispatch) share 
 """
 from __future__ import annotations
 
+import math
 import os
 import threading
 
@@ -70,10 +71,16 @@ def test_extended_env_is_strict_bool(monkeypatch, raw):
         lcsa._sparse_extended_enabled()
 
 
-@pytest.mark.parametrize("raw,want", [("1", True), ("0", False)])
-def test_extended_env_valid_values(monkeypatch, raw, want):
+@pytest.mark.parametrize("raw", ["1", "0"])
+def test_extended_env_valid_values(monkeypatch, raw):
+    """2.64 (D3): still strictly validated, but a documented no-op — always False;
+    setting it warns (DeprecationWarning)."""
+    import warnings
     monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", raw)
-    assert lcsa._sparse_extended_enabled() is want
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        assert lcsa._sparse_extended_enabled() is False
+    assert any(issubclass(x.category, DeprecationWarning) for x in w) is (raw == "1")
 
 
 @pytest.mark.parametrize("raw", ["abc", "0,85", "nan", "-1", "0", "inf"])
@@ -94,20 +101,19 @@ def test_new_bool_knob_registered():
     assert "MFA_SPARSE_NAX_EXTENDED" in _knobs.BOOL_KNOBS
 
 
-# ── D4: context-local override ─────────────────────────────────────────────────────────
 def test_override_is_context_local_and_forces_off(monkeypatch):
-    monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
-    with lcsa._extended_override(False):
-        assert lcsa._sparse_extended_enabled() is False          # forces OFF over the env
-    monkeypatch.delenv("MFA_SPARSE_NAX_EXTENDED")
+    """2.64: the context override is inert (the extended envelope is the default law);
+    it still never mutates the process environment."""
+    monkeypatch.delenv("MFA_SPARSE_NAX_EXTENDED", raising=False)
     seen = {}
     with lcsa._extended_override(True):
-        assert lcsa._sparse_extended_enabled() is True
+        assert lcsa._sparse_extended_enabled() is False
         t = threading.Thread(target=lambda: seen.update(other=lcsa._sparse_extended_enabled()))
         t.start(); t.join()
         assert "MFA_SPARSE_NAX_EXTENDED" not in os.environ       # no process-wide mutation
-    assert seen["other"] is False                                # other threads unaffected
-    assert lcsa._sparse_extended_enabled() is False
+    assert seen["other"] is False
+    with lcsa._extended_override(False):
+        assert lcsa._sparse_extended_enabled() is False
 
 
 # ── D1 / D4 through sla_attention ──────────────────────────────────────────────────────
@@ -153,32 +159,38 @@ def test_sla_default_on_pre_m5(monkeypatch, L, ratio):
 
 @m5only
 def test_sla_extended_false_forces_off(monkeypatch):
-    monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
+    """2.64: sla_attention(extended=...) no longer changes routing — the default law
+    serves the sparse term; extended=False and extended=None are byte-identical."""
     q, k, v = _qkv(2048, 64, H=2)
     with dt.capture() as cap:
-        mx.eval(S.sla_attention(q, k, v, topk_ratio=0.1, extended=False))
-    assert not any(r[0] == "v6nax_sparse" for r in cap), [r[:2] for r in cap]
+        a = S.sla_attention(q, k, v, topk_ratio=0.1, extended=False)
+        mx.eval(a)
+    b = S.sla_attention(q, k, v, topk_ratio=0.1)
+    mx.eval(b)
+    assert any(r[0] == "v6nax_sparse" for r in cap), [r[:2] for r in cap]
+    assert bool(mx.array_equal(a, b))
 
 
-# ── D3: refusal message ────────────────────────────────────────────────────────────────
 @m5only
 def test_non_32_mask_refused_with_pointer_to_default_path(monkeypatch):
+    """2.64: the extended refusal is retired — a documented 32x16 STEEL-geometry mask is
+    accepted even with the (no-op) knob set, and computes the masked operator."""
     monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
     N, D = 4096, 128
     q, k, v = _qkv(N, D)
     BQ, BK = att._steel_block_config(D)
     bm = mx.ones((-(-N // BQ), -(-N // BK)), dtype=mx.bool_)    # documented 32x16 geometry
-    with pytest.raises(ValueError, match="MFA_SPARSE_NAX_EXTENDED=0|default path"):
-        flash_attention_sparse(q, k, v, bm)
-    monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "0")
-    mx.eval(flash_attention_sparse(q, k, v, bm))                 # the default path accepts it
+    o = flash_attention_sparse(q, k, v, bm)
+    mx.eval(o)
+    ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=1.0 / math.sqrt(D))
+    assert float(mx.max(mx.abs(o.astype(mx.float32) - ref.astype(mx.float32))).item()) < 1e-2
 
 
 # ── D5: both entry points share the rules ──────────────────────────────────────────────
 @m5only
 @pytest.mark.parametrize("entry", ["flash_attention_sparse", "sparse_attention_dispatch"])
 def test_bt64_mask_expanded_under_extended(monkeypatch, entry):
-    monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
+    """2.64: BT64 masks are expanded exactly to BT32 on the default path (no opt-in)."""
     N, D = 4096, 128
     q, k, v = _qkv(N, D, seed=2)
     bm64 = _mask(N // 64, N // 64, 0.1)
@@ -194,7 +206,8 @@ def test_bt64_mask_expanded_under_extended(monkeypatch, entry):
 @m5only
 @pytest.mark.parametrize("entry", ["flash_attention_sparse", "sparse_attention_dispatch"])
 def test_dense_cutoff_applies_to_both_entries(monkeypatch, entry):
-    monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
+    """2.64 B6: at density >= the cutoff BOTH entry points take the V6NAX kernel when it
+    can serve the call (the same decision at both), oracle-correct."""
     N, D = 4096, 128
     q, k, v = _qkv(N, D, seed=3)
     bm = mx.ones((N // 32, N // 32), dtype=mx.bool_)            # density 1.0 >= cutoff 0.85
@@ -203,16 +216,15 @@ def test_dense_cutoff_applies_to_both_entries(monkeypatch, entry):
     with dt.capture() as cap:
         o = fn()
         mx.eval(o)
-    assert not any(r[0] == "v6nax_sparse" for r in cap), [r[:2] for r in cap]
+    assert any(r[0] == "v6nax_sparse" for r in cap), [r[:2] for r in cap]
     assert_row_gates(o, _oracle(q, k, v, bm, 32), **G16, label=entry)
 
 
 @m5only
 @pytest.mark.parametrize("entry", ["flash_attention_sparse", "sparse_attention_dispatch"])
 def test_small_mask_takes_dense_route_under_extended(monkeypatch, entry):
-    """Masks below the kernel's 4096-byte minimum: dense masked route, traced — not a
-    silent STEEL fallback (flash_attention_sparse) nor a C++ raise (dispatcher)."""
-    monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
+    """Masks below the kernel's 4096-byte minimum take a TRACED SDPA route (never a C++
+    raise, never a silent route) — 2.64: under the default law (N < 2048 anyway)."""
     N, D = 1024, 64                                              # 32 x 32 = 1024 B mask
     q, k, v = _qkv(N, D, seed=4)
     bm = _mask(N // 32, N // 32, 0.2)
@@ -221,25 +233,28 @@ def test_small_mask_takes_dense_route_under_extended(monkeypatch, entry):
     with dt.capture() as cap:
         o = fn()
         mx.eval(o)
-    assert any(r[0] == "sdpa" and "4096" in r[1] for r in cap), [r[:2] for r in cap]
+    own = [r for r in cap if not r[1].startswith(dt.REENTRANT_PREFIX)]
+    assert own and own[-1][0] == "sdpa", [r[:2] for r in cap]
     assert_row_gates(o, _oracle(q, k, v, bm, 32), **G16, label=entry)
 
 
 @m5only
 @pytest.mark.parametrize("bad", ["D256", "BT16"])
 def test_dispatcher_refusals_under_extended(monkeypatch, bad):
-    monkeypatch.setenv("MFA_SPARSE_NAX_EXTENDED", "1")
+    """2.64: the extended refusals are retired — the dispatcher's default law does not
+    route these to NAX and serves them on the SDPA path (traced), without raising."""
     N = 4096
     if bad == "D256":
         q, k, v = _qkv(N, 256)
         bm, bt = _mask(N // 32, N // 32, 0.1), 32
-        match = "head_dim must be 64 or 128"
     else:
         q, k, v = _qkv(N, 128)
         bm, bt = _mask(N // 16, N // 16, 0.1), 16
-        match = "block tile must be 32"
-    with pytest.raises(ValueError, match=match):
-        sparse_attention_dispatch(q, k, v, bm, block_tile=bt)
+    with dt.capture() as cap:
+        o = sparse_attention_dispatch(q, k, v, bm, block_tile=bt)
+        mx.eval(o)
+    assert not any(r[0] == "v6nax_sparse" for r in cap), [r[:2] for r in cap]
+    assert bool(mx.all(mx.isfinite(o)).item())
 
 
 # ── pre-RC review of dbd81f2 (siblings of D5) ─────────────────────────────────────────

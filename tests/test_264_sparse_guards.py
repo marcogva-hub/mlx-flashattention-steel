@@ -167,3 +167,22 @@ def test_mask_density_is_exact_and_copy_free():
     assert abs(d - expect) < 1e-12, (d, expect)
     assert peak < 64 * 2**20, f"density computation peaked at {peak / 2**20:.0f} MB (fp32 copy = 3.25 GB)"
     del m
+
+
+@nax
+def test_oversize_rescue_judges_the_callers_mask_geometry(monkeypatch):
+    """The router splits masks to the STEEL geometry before the fallback; the rescue
+    must judge the caller's 32x32 mask (here non-aligned N -> the auto_pad kernel)."""
+    monkeypatch.setenv("MFA_SPARSE_FALLBACK_MAX_BYTES", str(2**20))
+    monkeypatch.setenv("MFA_SPARSE_NAX_LEGACY_POLICY", "1")     # policy says no
+    N = 4100
+    q, k, v = _qkv(1, 4, N)
+    nb = -(-N // 32)
+    m = mx.ones((nb, nb), dtype=mx.bool_)
+    with dt.capture() as tr:
+        o = flash_attention_sparse(q, k, v, m)
+        mx.eval(o)
+    term = [t for t in tr if not t[1].startswith(dt.REENTRANT_PREFIX)][-1]
+    assert term[0] == "v6nax_sparse" and "kv_valid_len" in term[1], term
+    ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=1 / math.sqrt(128))
+    assert float(mx.max(mx.abs(o.astype(mx.float32) - ref.astype(mx.float32))).item()) < 1e-2

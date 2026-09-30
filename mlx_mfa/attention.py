@@ -3419,8 +3419,7 @@ def _auto_pad_nax_route(q, k, v, block_mask, causal: bool) -> bool:
     if mask_bytes < 4096:
         return False
     from mlx_mfa.lcsa_nax import (
-        _d_dense_cutoff, _nax_sparse_route_viable, _sparse_extended_enabled,
-        decide_auto_version)
+        _d_dense_cutoff, _nax_sparse_route_viable, decide_auto_version)
     from mlx_mfa.lcsa_nax import mask_density
     density = mask_density(block_mask)                     # 2.64 B3: no fp32 copy
     # The router's kernel choice honours MFA_LCSA_KERNEL_VERSION (v1 = scalar); the
@@ -3429,10 +3428,11 @@ def _auto_pad_nax_route(q, k, v, block_mask, causal: bool) -> bool:
         return False
     w = [(0, 0), (0, 0), (0, P - N), (0, 0)]
     qp, kp, vp = (mx.pad(x, w) for x in (q, k, v))       # lazy: shapes/dtypes only
-    route = (_nax_sparse_route_viable(qp, kp, 32, density, causal=causal, V=vp)
-             and (_sparse_extended_enabled()
-                  or density <= _nax_sparse_density_ceiling()))
-    return bool(route and density < _d_dense_cutoff())
+    if density >= _d_dense_cutoff():                     # 2.64 B6, same rule as the router
+        from mlx_mfa.lcsa_nax import _quasi_dense_nax_viable
+        return bool(_quasi_dense_nax_viable(qp, kp, vp, block_mask, 32, causal))
+    return bool(_nax_sparse_route_viable(qp, kp, 32, density, causal=causal, V=vp)
+                and density <= _nax_sparse_density_ceiling())
 
 
 def _sparse_nax_with_sdpa_vjp(q, k, v, block_mask, bt, scale, causal):
@@ -4118,28 +4118,33 @@ def flash_attention_sparse(
                         # Hardened same-dtype sparse map (2026-07-13): both
                         # causal and non-causal use the canonical shape/dtype/
                         # density gate. The env ceiling can only restrict it.
-                        from mlx_mfa.lcsa_nax import mask_density
-                        _density = mask_density(block_mask)   # 2.64 B3: no fp32 copy
                         from mlx_mfa.lcsa_nax import (
-                            _nax_sparse_route_viable, _sparse_extended_enabled,
-                            _d_dense_cutoff)
-                        _extended = _sparse_extended_enabled()
+                            _d_dense_cutoff, _nax_sparse_route_viable,
+                            _quasi_dense_nax_viable, mask_density)
+                        _density = mask_density(block_mask)   # 2.64 B3: no fp32 copy
+                        # 2.64 B6 (D2): near-dense masks never reach a float bias —
+                        # the V6NAX kernel when it can serve the call (0.42x of the
+                        # 2.63 path on FlashVSR; ~= dense SDPA at d 0.999), else
+                        # SDPA + bool keep-mask.  Decided here, once: the direct
+                        # wrapper does not re-derive the policy.
+                        if _density >= _d_dense_cutoff():
+                            if _quasi_dense_nax_viable(q, k, v, block_mask, bt_q, causal):
+                                _dtrace.record(
+                                    "v6nax_sparse",
+                                    f"quasi-dense (d={_density:.3f} >= cutoff) -> V6NAX (2.64 B6)")
+                                return _make_sparse_nax_direct_vjp(
+                                    float(scale), bool(causal))(q, k, v, block_mask)
+                            _dtrace.record(
+                                "sdpa", "quasi-dense, kernel cannot serve -> SDPA + bool mask")
+                            return _sparse_fallback_sdpa_perhead(
+                                q, k, v, block_mask, scale, causal)
+                        # 2.64 B4/B5: the promoted law (MFA_SPARSE_NAX_EXTENDED is a
+                        # no-op); MFA_NAX_SPARSE_DENSITY_CEILING can only restrict it.
                         _route_nax = (
                             _nax_sparse_route_viable(
                                 q, k, bt_q, _density, causal=causal, V=v)
-                            # spec §3: the extended opt-in bypasses this extra
-                            # density ceiling too (density is diverted to the
-                            # dense route by the D_DENSE_CUTOFF dispatch below).
-                            and (_extended
-                                 or _density <= _nax_sparse_density_ceiling())
+                            and _density <= _nax_sparse_density_ceiling()
                         )
-                        # spec §1 item 4: near-dense → dense masked route (the
-                        # block-skip's per-block overhead buys nothing here; this
-                        # dispatch is what caps the wrapper overhead at ~zero
-                        # sparsity, gate 7). No-op on the default path, where the
-                        # 0.30 density ceiling already excludes near-dense NAX.
-                        if _density >= _d_dense_cutoff():
-                            _route_nax = False
                         if not _route_nax:
                             _dtrace.record(
                                 "sdpa", "sparse outside hardened beta-3 gate"
@@ -4185,6 +4190,7 @@ def flash_attention_sparse(
     # expansion re-tiled keys to 25/30/31-token tiles (silent-wrong).  Kernel
     # tile t covers keys [t*BK, t*BK+BK) = maker tile floor(t*BK/BK_m), which
     # repeat(r)[:NK_expected] reproduces exactly for any N.
+    _maker_mask = block_mask          # 2.64 B1: the caller's geometry, for the size-guard rescue
     if _got != (NQ_expected, NK_expected):
         if BQ_m % BQ or BK_m % BK:
             raise ValueError(
@@ -4223,7 +4229,10 @@ def flash_attention_sparse(
     # the macOS-26 path. When FIXED, the opt-in branch falls through to the native
     # kernel below.
     if _get_is_m5_plus_cached() and not _macos27_sparse_native_ok():
-        return _sparse_fallback_sdpa_perhead(q, k, v, block_mask, scale, causal)
+        _dtrace.record("sdpa", "M5+ STEEL-geometry mask -> SDPA + bool mask "
+                               "(STEEL sparse off on M5: correctness gate)")
+        return _sparse_fallback_sdpa_perhead(q, k, v, block_mask, scale, causal,
+                                            rescue_mask=_maker_mask)
 
     # SPARSE-D128-OOB (force-arch, iter-6 follow-up): the STEEL V1 block-sparse
     # forward kernel is out-of-bounds at head_dim=128 on the is_m3_plus path
@@ -4236,7 +4245,10 @@ def flash_attention_sparse(
     # unchanged for M3/M4 (always False there); it only matters for the future
     # macOS-27-FIXED M5 opt-in path, which must skip this second guard too.
     if D == 128 and _get_is_m3_plus_cached() and not _macos27_sparse_native_ok():
-        return _sparse_fallback_sdpa_perhead(q, k, v, block_mask, scale, causal)
+        _dtrace.record("sdpa", "M3+ D=128 STEEL-geometry mask -> SDPA + bool mask "
+                               "(SPARSE-D128-OOB correctness gate)")
+        return _sparse_fallback_sdpa_perhead(q, k, v, block_mask, scale, causal,
+                                            rescue_mask=_maker_mask)
 
     impl = _make_mfa_sparse_custom(scale, causal, head_dim=D, backward=backward)
     q = mx.contiguous(q)
@@ -5397,10 +5409,24 @@ def _nax_sparse_capacity_ok(q, k, v, block_mask, causal: bool) -> bool:
         return False
     if causal and N != S:
         return False
-    if block_mask.ndim not in (2, 3):
+    if block_mask.ndim not in (2, 3, 4):            # csrc/mfa_sparse_attention.cpp:1167
         return False
     from mlx_mfa.lcsa_nax import SPARSE_NAX_MIN_MASK_BYTES, _mask_bytes
     return _mask_bytes(block_mask) >= SPARSE_NAX_MIN_MASK_BYTES
+
+
+def _nax_sparse_padded_capacity_ok(q, k, v, block_mask, causal: bool) -> bool:
+    """Capacity of the auto_pad kernel route (square, non-aligned N, pad keys masked
+    in-kernel via kv_valid_len): the same checks on the 32-padded problem."""
+    N, S = int(q.shape[2]), int(k.shape[2])
+    if N != S or N % 32 == 0:
+        return False
+    P = -(-N // 32) * 32
+    if tuple(block_mask.shape[-2:]) != (P // 32, P // 32):
+        return False
+    w = [(0, 0), (0, 0), (0, P - N), (0, 0)]
+    qp, kp, vp = (mx.pad(x, w) for x in (q, k, v))       # lazy: shapes / dtypes only
+    return _nax_sparse_capacity_ok(qp, kp, vp, block_mask, causal)
 
 
 def _sparse_fallback_sdpa(
@@ -5626,6 +5652,7 @@ def _sparse_fallback_sdpa_perhead(
     block_mask: mx.array,
     scale: float,
     causal: bool,
+    rescue_mask: Optional[mx.array] = None,
 ) -> mx.array:
     """SDPA fallback for sparse that PRESERVES per-head and per-batch masks.
 
@@ -5658,12 +5685,21 @@ def _sparse_fallback_sdpa_perhead(
     # before any allocation.
     need = _sparse_fallback_mask_bytes(block_mask.shape, N, S)
     if need > _sparse_fallback_max_bytes():
-        if _nax_sparse_capacity_ok(q, k, v, block_mask, causal):
+        # The router normalises masks to the STEEL geometry (exact split) before this
+        # fallback; the rescue judges the caller's own (maker-geometry) mask.
+        rm = block_mask if rescue_mask is None else rescue_mask
+        if _nax_sparse_capacity_ok(q, k, v, rm, causal):
             _dtrace.record(
                 "v6nax_sparse",
                 f"size guard: fallback mask {need / 2**30:.2f} GiB > "
                 f"MFA_SPARSE_FALLBACK_MAX_BYTES -> V6NAX sparse")
-            return _make_sparse_nax_direct_vjp(float(scale), bool(causal))(q, k, v, block_mask)
+            return _make_sparse_nax_direct_vjp(float(scale), bool(causal))(q, k, v, rm)
+        if 0 < scale < math.inf and _nax_sparse_padded_capacity_ok(q, k, v, rm, causal):
+            _dtrace.record(
+                "v6nax_sparse",
+                f"size guard: fallback mask {need / 2**30:.2f} GiB > "
+                f"MFA_SPARSE_FALLBACK_MAX_BYTES -> V6NAX sparse (auto_pad, kv_valid_len)")
+            return _make_sparse_nax_padded_vjp(float(scale), bool(causal))(q, k, v, rm)
         _check_sparse_fallback_size(block_mask.shape, N, S, "flash_attention_sparse")
 
     # 2.64 B2: bool keep-mask (cached by mask identity + content, the v2.33.1 fast

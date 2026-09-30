@@ -25,6 +25,7 @@ Sprint B's envelope.
 from __future__ import annotations
 
 import math
+import warnings
 import contextlib
 import contextvars
 import os
@@ -334,10 +335,25 @@ DEFAULT_DENSITY_THRESHOLD = 1.01
 # restricted to the measured values rather than interpolating the interval.
 SPARSE_NAX_VIABLE_BLOCK_TILES = frozenset({32})
 SPARSE_NAX_VIABLE_HEAD_DIMS = frozenset({64, 128})
-SPARSE_NAX_MEASURED_BH = frozenset({1, 4, 12})
-SPARSE_NAX_MIN_N = 4096
-SPARSE_NAX_MAX_N = 8192
+# ── 2.64 B4 (Marco D3, 2026-10-01): the extended envelope is the DEFAULT non-causal law.
+# N in [SPARSE_NAX_MIN_N, SPARSE_NAX_MAX_N], ANY B*H, fp16/bf16, the density ceilings
+# kept as measured.  MAX_N 200000: engaged + row-correct + 5.3-9.7x at N=200000 and
+# B*H 32/40/56 (devnotes/production_shapes_2026-10.md §2; Volet A 16k-144k B1H40).
+# MIN_N 2048 (decision D2) — evidence = ONE shape (FlashVSR B1H12, 2048x8192).  The
+# B*H allowlist is gone: every measured B*H won at d <= 0.30 (the COVERAGE below —
+# documentation, not a gate: DAY-3 Block 1 B*H16 204 cells 0 loss, Phase 2, Volet A).
+SPARSE_NAX_MEASURED_BH_COVERAGE = frozenset({1, 4, 12, 16, 32, 40, 56})
+SPARSE_NAX_MIN_N = 2048
+SPARSE_NAX_MAX_N = 200_000
 SPARSE_NAX_DENSITY_CEILING = 0.30
+# The lower measured ceilings below held at N < 8192 (the 2.63 map: N=8192 won all
+# 36 fp16 cells at d <= 0.30); they are kept in exactly that range.
+SPARSE_NAX_LOWER_CEILING_BELOW_N = 8192
+# 2.63 policy, kept one release behind MFA_SPARSE_NAX_LEGACY_POLICY=1.
+_LEGACY_MEASURED_BH = frozenset({1, 4, 12})
+_LEGACY_MIN_N = 4096
+_LEGACY_MAX_N = 8192
+SPARSE_NAX_MEASURED_BH = _LEGACY_MEASURED_BH       # 2.63 name (legacy policy only)
 SPARSE_NAX_D64_BH12_DENSITY_CEILING = 0.25
 SPARSE_NAX_D128_BH4_DENSITY_CEILING = 0.05
 SPARSE_NAX_CAUSAL_MIN_N = 4096
@@ -397,20 +413,23 @@ def _extended_override(value: bool):
 
 
 def _sparse_extended_enabled() -> bool:
-    """spec §3 opt-in — ``MFA_SPARSE_NAX_EXTENDED=1`` bypasses the measured
-    POLICY bounds of the NAX-sparse routing gate (MEASURED_BH / MIN_N / MAX_N /
-    DENSITY_CEILING), NEVER the §1 capacity constraints (block_tile==32,
-    fp16/bf16, D in {64,128}, qL==kL). Off (default) → routing strictly
-    unchanged / byte-identical (spec §3 off-path contract).
-
-    RC 2.63.0: a context-local ``_extended_override`` wins (D4); the env var uses
-    the repository's strict 0/1 boolean parser (D2: "true"/"yes"/"on" used to
-    enable it and "2" silently disabled it — both now raise)."""
-    override = _EXTENDED_OVERRIDE.get()
-    if override is not None:
-        return override
+    """2.64 (D3): ``MFA_SPARSE_NAX_EXTENDED`` is a documented, DEPRECATED no-op — the
+    extended envelope is the default law (``_nax_sparse_route_viable``).  Always False;
+    setting the knob (strict 0/1, still validated) emits a DeprecationWarning.  The
+    context override (`_extended_override`) is inert as well."""
     from mlx_mfa._knobs import get_bool_env
-    return bool(get_bool_env("MFA_SPARSE_NAX_EXTENDED"))
+    if get_bool_env("MFA_SPARSE_NAX_EXTENDED"):
+        warnings.warn(
+            "MFA_SPARSE_NAX_EXTENDED is a no-op since mlx-mfa 2.64: the extended sparse "
+            "envelope is the default routing law (N in [2048, 200000], any B*H, density "
+            "ceilings kept).  MFA_SPARSE_NAX_LEGACY_POLICY=1 restores the 2.63 policy for "
+            "one release.", DeprecationWarning, stacklevel=2)
+    return False
+
+
+def _legacy_policy() -> bool:
+    from mlx_mfa._knobs import get_bool_env
+    return bool(get_bool_env("MFA_SPARSE_NAX_LEGACY_POLICY"))
 
 
 # The V6NAX sparse kernel refuses block masks smaller than this (C++ sparse_attention:
@@ -460,18 +479,15 @@ def _extended_prepare(D: int, block_mask, N: int, S: int):
 
 
 def _nax_sparse_route_viable(Q, K, block_tile, density, *, causal=False, V=None) -> bool:
-    """Return whether the exact β3-measured sparse region routes to V6NAX.
+    """Whether the V6NAX sparse route serves this call under the DEFAULT policy.
 
-    Unmeasured B·H values and causal cells are deliberately not interpolated.
-    For non-causal cells that won at N=4096, N is treated as a conservative
-    entry threshold through the measured maximum N=8192; the broad regions that
-    only won at N=8192 remain exact-N routes.
-
-    With ``MFA_SPARSE_NAX_EXTENDED=1`` (spec §3) the measured-envelope logic is
-    skipped once the §1 capacity gate passes: the extended path routes on
-    CAPABILITY, with high density diverted to the dense route upstream by the
-    D_DENSE_CUTOFF dispatch (so density is not re-gated here).
-    """
+    Capacity first (32-token tile, fp16/bf16, D in {64, 128}, V matching Q/K), then:
+      * 2.64 non-causal law (B4/B5): qL, kL in [SPARSE_NAX_MIN_N, SPARSE_NAX_MAX_N],
+        qL != kL allowed (the kernel documents non-causal rectangular), any B*H,
+        density <= 0.30 — and the measured lower ceilings (D128 B*H4 0.05, D64 B*H12
+        0.25) below N=8192, where they were measured.
+      * causal: the 2.63 exact cells, unchanged (qL == kL — U2).
+    ``MFA_SPARSE_NAX_LEGACY_POLICY=1`` restores the complete 2.63 decision."""
     if block_tile not in SPARSE_NAX_VIABLE_BLOCK_TILES:
         return False
     if Q.dtype not in (mx.float16, mx.bfloat16):
@@ -486,41 +502,57 @@ def _nax_sparse_route_viable(Q, K, block_tile, density, *, causal=False, V=None)
     if V is not None and (int(V.shape[3]) != D or V.dtype != Q.dtype
                           or int(V.shape[2]) != int(K.shape[2])):
         return False
+    if _legacy_policy():
+        return _route_viable_263(Q, K, density, causal=causal)
+    qL, kL = int(Q.shape[2]), int(K.shape[2])
+    bh = int(Q.shape[0]) * int(Q.shape[1])
+    if causal:
+        return qL == kL and _causal_cells_263(qL, D, bh, Q.dtype, density)
+    if not (SPARSE_NAX_MIN_N <= min(qL, kL) and max(qL, kL) <= SPARSE_NAX_MAX_N):
+        return False
+    ceiling = SPARSE_NAX_DENSITY_CEILING
+    if max(qL, kL) < SPARSE_NAX_LOWER_CEILING_BELOW_N:
+        if bh == 4 and D == 128:
+            ceiling = SPARSE_NAX_D128_BH4_DENSITY_CEILING
+        elif bh == 12 and D == 64:
+            ceiling = SPARSE_NAX_D64_BH12_DENSITY_CEILING
+    return density <= ceiling
+
+
+def _causal_cells_263(qL, D, bh, dtype, density) -> bool:
+    """The 2.63 causal cells (unchanged in 2.64)."""
+    # bf16 has one measured winning causal cell; keep it exact.
+    if dtype == mx.bfloat16:
+        return (qL == 4096 and D == 128 and bh == 4
+                and density <= SPARSE_NAX_CAUSAL_BH4_DENSITY_CEILING)
+    if qL == 4096 and D == 128 and bh == 4:
+        return density <= SPARSE_NAX_CAUSAL_BH4_DENSITY_CEILING
+    if qL == 4096 and D == 128 and bh == 12:
+        return density <= SPARSE_NAX_CAUSAL_DENSITY_CEILING
+    if qL == 8192 and D in (64, 128) and bh == 12:
+        return density <= SPARSE_NAX_CAUSAL_DENSITY_CEILING
+    return False
+
+
+def _route_viable_263(Q, K, density, *, causal=False) -> bool:
+    """The complete 2.63 policy (capacity already checked) — MFA_SPARSE_NAX_LEGACY_POLICY=1."""
+    D = int(Q.shape[3])
     qL, kL = int(Q.shape[2]), int(K.shape[2])
     if qL != kL:                       # square-only in v1 (capacity-adjacent)
         return False
-    # spec §3 — capacity gate above holds → bypass the POLICY envelope.
-    if _sparse_extended_enabled():
-        return True
-    if qL > SPARSE_NAX_MAX_N:           # default: measured-envelope MAX_N bound
+    if qL > _LEGACY_MAX_N:
         return False
     bh = int(Q.shape[0]) * int(Q.shape[1])
-
     if causal:
-        # bf16 has one measured winning causal cell; keep it exact.
-        if Q.dtype == mx.bfloat16:
-            return (qL == 4096 and D == 128 and bh == 4
-                    and density <= SPARSE_NAX_CAUSAL_BH4_DENSITY_CEILING)
-        if qL == 4096 and D == 128 and bh == 4:
-            return density <= SPARSE_NAX_CAUSAL_BH4_DENSITY_CEILING
-        if qL == 4096 and D == 128 and bh == 12:
-            return density <= SPARSE_NAX_CAUSAL_DENSITY_CEILING
-        if qL == 8192 and D in (64, 128) and bh == 12:
-            return density <= SPARSE_NAX_CAUSAL_DENSITY_CEILING
-        return False
-
-    # The only bf16 non-causal winning region measured was D128/B·H12 at
-    # N=4096. Apply the same conservative N-entry threshold as its fp16 region.
+        return _causal_cells_263(qL, D, bh, Q.dtype, density)
     if Q.dtype == mx.bfloat16:
-        return (SPARSE_NAX_MIN_N <= qL <= SPARSE_NAX_MAX_N
+        return (_LEGACY_MIN_N <= qL <= _LEGACY_MAX_N
                 and D == 128 and bh == 12
                 and density <= SPARSE_NAX_DENSITY_CEILING)
-
-    # N=8192 won all 36 fp16 cells for measured B·H values and d<=0.30.
-    if (qL == SPARSE_NAX_MAX_N and bh in SPARSE_NAX_MEASURED_BH
+    if (qL == _LEGACY_MAX_N and bh in _LEGACY_MEASURED_BH
             and density <= SPARSE_NAX_DENSITY_CEILING):
         return True
-    if not (SPARSE_NAX_MIN_N <= qL <= SPARSE_NAX_MAX_N):
+    if not (_LEGACY_MIN_N <= qL <= _LEGACY_MAX_N):
         return False
     if bh == 12 and D == 128:
         return density <= SPARSE_NAX_DENSITY_CEILING
@@ -529,6 +561,20 @@ def _nax_sparse_route_viable(Q, K, block_tile, density, *, causal=False, V=None)
     if bh == 4 and D == 128:
         return density <= SPARSE_NAX_D128_BH4_DENSITY_CEILING
     return False
+
+
+def _quasi_dense_nax_viable(Q, K, V, block_mask, block_tile, causal) -> bool:
+    """2.64 B6 (D2): at density >= D_DENSE_CUTOFF the best measured arm is the V6NAX
+    kernel (0.42x of the 2.63 path on the FlashVSR shapes; ~= dense SDPA at d 0.999)
+    when it can serve the call: non-causal (the evidence), 32-token tile, the capacity
+    checks, lengths within the law's N bounds.  Otherwise SDPA + bool keep-mask."""
+    if causal or block_tile != SPARSE_NAX_KERNEL_BLOCK_TILE or _legacy_policy():
+        return False
+    qL, kL = int(Q.shape[2]), int(K.shape[2])
+    if not (SPARSE_NAX_MIN_N <= min(qL, kL) and max(qL, kL) <= SPARSE_NAX_MAX_N):
+        return False
+    from mlx_mfa.attention import _nax_sparse_capacity_ok
+    return _nax_sparse_capacity_ok(Q, K, V, block_mask, causal)
 
 
 def _expand_bt64_for_v6nax(
@@ -699,13 +745,17 @@ def sparse_attention_dispatch(
     # This removes the BT=16 ~5.5× mis-route footgun: routing correctness no longer
     # depends on a caller hand-tuning the density threshold. density_threshold is
     # retained as a secondary (further-restrict-only) tunable within the window.
-    if ((not _force_sdpa) and not _small_mask
-            and _nax_sparse_route_viable(Q, K, block_tile, density, causal=causal, V=V)
-            and density < density_threshold
-            # RC 2.63.0 (D5): the dense cutoff applies here as in flash_attention_sparse
-            # (on the default path, whose ceilings are <= 0.30, it only matters for
-            # values <= 0.30 — a no-op at its default 0.85).
-            and density < _d_dense_cutoff()):
+    _route = ((not _force_sdpa) and not _small_mask
+              and _nax_sparse_route_viable(Q, K, block_tile, density, causal=causal, V=V)
+              and density < density_threshold
+              and density < _d_dense_cutoff())
+    # 2.64 B6 (D2): at/above the dense cutoff the V6NAX kernel is the best measured arm
+    # whenever it can serve the call (same rule as flash_attention_sparse).
+    if (not _route and not _force_sdpa and not _small_mask
+            and density >= _d_dense_cutoff() and density < density_threshold
+            and _quasi_dense_nax_viable(Q, K, V, block_mask, block_tile, causal)):
+        _route = True
+    if _route:
         return sparse_attention_nax(
             Q, K, V, block_mask,
             block_tile=block_tile,

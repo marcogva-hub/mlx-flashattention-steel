@@ -131,10 +131,11 @@ def test_lock_topk1_equals_dense(monkeypatch, L):
     """topk_ratio=1.0 → all blocks selected → o_sparse == dense attention.
 
     TST-10 (review 2026-09): at density 1.0 the D_DENSE_CUTOFF sent this to the dense
-    SDPA route, so the lock compared SDPA with SDPA.  The cutoff is lifted to force the
-    V6NAX block-skip kernel (asserted by trace), against an independent CPU fp32 dense
-    reference; L=2050 also exercises the auto_pad kv_valid_len route (U1)."""
-    monkeypatch.setenv("MFA_SPARSE_D_DENSE_CUTOFF", "1.01")
+    SDPA route, so the lock compared SDPA with SDPA.  2.64 B6: at/above the cutoff the
+    V6NAX kernel IS the default arm when it can serve the call — no override needed any
+    more (2.63 lifted the cutoff to 1.01 and relied on the extended opt-in).  Asserted by
+    trace, against an independent CPU fp32 dense reference; L=2050 also exercises the
+    auto_pad kv_valid_len route (U1)."""
     q, k, v = _mk(1, 8, L, 128)
     scale = 1.0 / math.sqrt(128)
     sm = S._sla_block_map(q, k, 1.0, 128, 64)
