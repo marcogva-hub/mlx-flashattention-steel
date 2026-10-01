@@ -1,0 +1,1131 @@
+{
+  "summary": "Volet 2: read-at-source census of the V6-NAX autoresearch search space across all kernel families",
+  "agentCount": 7,
+  "logs": [],
+  "result": {
+    "families": [
+      {
+        "family": "dense_forward_D64_D128",
+        "knob_axes": [
+          {
+            "knob": "MFA_V6_NAX_BQ",
+            "domain": "parallelization (Q-block rows). Default D64=32, D128=64. Constraint BQ % (WM*16)==0; with kU=16 hardcoded, TQ=BQ/(WM*16) must equal 1 per Apple static_assert, so practically BQ==WM*16. Coarse {32,64,128}.",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:341 (default), :354 (env read), :360 (dispatch override), :368 (BQ%(WM*16)==0); csrc/mfa/v6_nax/NAAttentionKernel.cpp:2808-2809 (kU=16, TQ)",
+            "sweepable_no_rebuild": true,
+            "notes": "Env change -> new cache key -> Metal JIT recompile, no C++ rebuild. Prod dense route passes no override (uses these defaults) but still reads the env at codegen, so a sweep engages the routed kernel."
+          },
+          {
+            "knob": "MFA_V6_NAX_BK",
+            "domain": "traversal (K cols). Default 32 for ALL D (autotuned post-F-3). Constraint: positive multiple of 32 (TK=BK/16 must be even, paired 16x32x16 MMA). Coarse {32,64,128}; 128 = M5 doctrine target.",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:347 (default), :355 (env read), :361 (override), :384 (BK%32==0); NAAttentionKernel.cpp:2811 (TK=BK/16)",
+            "sweepable_no_rebuild": true,
+            "notes": "Current default 32 does NOT match the M5 doctrine BK=128 — that is the main untested tile axis for this family."
+          },
+          {
+            "knob": "MFA_V6_NAX_WM",
+            "domain": "executionSIMDGroups (simdgroups per TG). Default D64=2, D128=4. Constraints: WM>=1, threadgroupSize=32*WM<=1024 -> WM<=32, and BQ%(WM*16)==0. Coarse {2,4,8}; WM=4 = 2x2-simdgroup M5 doctrine.",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:348 (default), :356 (env read), :362 (override); NAAttentionKernel.cpp:91 (threadgroupSize=32*execSG), :2807 (WM=execSG)",
+            "sweepable_no_rebuild": true,
+            "notes": "D128 default WM=4 already IS the doctrine 2x2 simdgroups; the doctrine delta vs current default is purely BK (32->128) plus Morton walk."
+          },
+          {
+            "knob": "MFA_V6_NAX_D_SUBTILE (BD)",
+            "domain": "head sub-tile. For D in {64,128} PINNED to head_dim (0 DOF): validator requires D<256 -> BD==head_dim, else 16-aligned exact divisor of D. Default = head_dim (D<256), 128 (D>=256).",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:352 (default), :363 (env read), :390-392 (D<256 -> BD==head_dim)",
+            "sweepable_no_rebuild": true,
+            "notes": "Not a screening axis for this family — BD is fixed at head_dim; subtiling only opens at D>=256 (SUBTILES=FULL_BD/BD, NAAttentionKernel.cpp:2806)."
+          },
+          {
+            "knob": "MFA_V6_NAX_SINGLE_OTILE",
+            "domain": "bool (0/1). Default true when self-attn (Hq==Hk or Hq%Hk==0). use_v6nax REQUIRES single_otile; single_otile forces bypass_tgp=true (threadgroup mem alloc -> 0).",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:306 (default), :314 (env override), :337 (use_v6nax gate), :318 (forces bypass); NAAttentionKernel.cpp:67-68 (tgmem=0)",
+            "sweepable_no_rebuild": true,
+            "notes": "Effectively pinned true for the prod dense self-attn family; setting 0 drops the shape out of the NAX path. Because bypass=>tgmem 0, BK=128 is NOT threadgroup-memory-blocked (register pressure is the real ceiling)."
+          },
+          {
+            "knob": "MFA_V6_USE_NAX",
+            "domain": "bool (0/1). Source-gen default: D128 -> on. Lever to force NAX codegen at D=64. Aliased read.",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:327-329",
+            "sweepable_no_rebuild": true,
+            "notes": "Does NOT change the Python prod route (attention.py gate is head_dim==128 hardcoded); only affects the source-gen-only default when use_v6nax is not explicit."
+          },
+          {
+            "knob": "MFA_V6_RELAXED_PRECISION",
+            "domain": "bool (0/1), default on(true). 0 -> post-gen substitution disables relaxed_precision flag in every matmul2d_descriptor.",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:467-482",
+            "sweepable_no_rebuild": true,
+            "notes": "Numerics x perf axis (string substitution -> JIT recompile). Orthogonal to tiles."
+          },
+          {
+            "knob": "MFA_V6_UNROLL_MODE",
+            "domain": "enum {full,none,2,4}, default full. Rewrites the K-loop '#pragma clang loop unroll(full)'.",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:485-493",
+            "sweepable_no_rebuild": true,
+            "notes": "Register-pressure / ILP axis; interacts with BK (unroll of TK=BK/16 iters)."
+          },
+          {
+            "knob": "MFA_V6_FORCE_DYNAMIC_K",
+            "domain": "bool (0/1), default off. Swaps static K constants for dynamic_length_v<int> in matmul2d_descriptor.",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:432-463",
+            "sweepable_no_rebuild": true,
+            "notes": "Compile-time-vs-dynamic bound paradox probe; correctness-neutral, perf only."
+          },
+          {
+            "knob": "MFA_V6_MAX_THREADS",
+            "domain": "int bucket. Sets maxTotalThreadsPerThreadgroup pipeline-state attribute (occupancy hint).",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:947-950 (cache-key bits 7-9 per :190)",
+            "sweepable_no_rebuild": true,
+            "notes": "Occupancy axis independent of tile; changes pipeline state, cache-keyed."
+          },
+          {
+            "knob": "MFA_V6_DENSE_MIN_N (dispatch gate)",
+            "domain": "int, default 2048. N (=q_shape[2]) threshold to engage nax_dense; 0 = force NAX at all N.",
+            "source_site": "mlx_mfa/attention.py:52 (_V6_DENSE_MIN_N_DEFAULT), :521 (read), :537 (return nax_dense)",
+            "sweepable_no_rebuild": true,
+            "notes": "Python routing gate, no rebuild. Governs whether the D=128 dense NAX kernel runs at all for a given N."
+          },
+          {
+            "knob": "MFA_DISABLE_V6_DENSE (dispatch gate)",
+            "domain": "bool (0/1), default 0. 1 -> force sdpa fallback for dense forward.",
+            "source_site": "mlx_mfa/attention.py:535; ENV_VARS.md:32",
+            "sweepable_no_rebuild": true,
+            "notes": "Opt-out; routing gate only."
+          },
+          {
+            "knob": "MFA_V6_BLOCK_R / MFA_V6_BLOCK_C / MFA_V6_EXEC_SG / MFA_V6_BYPASS_TGP",
+            "domain": "VESTIGIAL post-F-3. Feed the REMOVED simdgroup descriptor path; verified by runtime fingerprint to NOT steer the dispatched NAX kernel. Emits a stderr 'VESTIGIAL / use MFA_V6_NAX_BQ/BK/WM' note.",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:281-290 (dead-path comment), :308-311, :917-921 (warning)",
+            "sweepable_no_rebuild": false,
+            "notes": "GHOST for this family — no effect on the live NAX tile. Do NOT include in a tile sweep; the old 'BQ=16 wins / BQ=64 catastrophic 4x' note describes THIS dead path and is false for the NAX kernel."
+          },
+          {
+            "knob": "kU (codegen constant = 16)",
+            "domain": "MMA fragment width, hardcoded. Sets TQ=BQ/(WM*16), TD=BD/16, TK=BK/16. Changing kU or relaxing the TQ==1 static_assert requires a source variant + C++ extension rebuild.",
+            "source_site": "csrc/mfa/v6_nax/NAAttentionKernel.cpp:2808 (kU=16), :2809 (TQ expected 1)",
+            "sweepable_no_rebuild": false,
+            "notes": "Pure codegen axis; not env-exposed. Constrains the BQ/WM lattice."
+          },
+          {
+            "knob": "Morton grid walk (codegen)",
+            "domain": "NOT wired into the dense NAX forward. createV6NAXSource dispatches on plain tgid/tid.x (grid NQ x H x B); morton_decode_* exists only in the block-mask/other generators. Adding a Morton/row-group remap for occupancy+L2 locality = source variant + rebuild.",
+            "source_site": "csrc/mfa/v6_nax/NAAttentionKernel.cpp:2782-2793 (dense fwd grid), :310/:502 (Morton used elsewhere only)",
+            "sweepable_no_rebuild": false,
+            "notes": "Third element of the M5 doctrine (BK=128 / 2x2 simdgroups / Morton walk) that is currently UNIMPLEMENTED for dense forward -> open question, not a knob."
+          }
+        ],
+        "coarse_grid_cells": 108,
+        "grid_description": "Free tile axes for D in {64,128}: BQ, BK, WM only — BD is pinned to head_dim (0 DOF, primitive:352/:390) and D-subtiling opens only at D>=256. Coarse per-axis domains read at source: BQ in {32,64,128} (mult of WM*16, :368), BK in {32,64,128} (mult of 32, :384; 32=current default, 128=M5 doctrine target), WM in {2,4,8} (32*WM<=1024, NAAttentionKernel.cpp:91; 4=2x2-simdgroup doctrine). Naive BQ x BK x WM = 3x3x3 = 27 tile combos, but the BQ%(WM*16)==0 mask keeps only 6 (BQ,WM) pairs {(32,2),(64,2),(128,2),(64,4),(128,4),(128,8)} and the Apple TQ==1 static_assert (BQ==WM*16, NAAttentionKernel.cpp:2809) narrows to 3 doctrine-safe pairs {(32,2),(64,4),(128,8)}. Doctrine-safe coarse screen = 3 (BQ,WM) x 3 BK x 2 D{64,128} x 2 dtype{fp16,bf16} x 3 N{2048,4096,8192} = 108 cells. Prod-REACHABLE subset (env-sweepable via public API) is D=128 only -> 54 cells, since the Python dense route hardcodes head_dim==128 (attention.py:526) and D=64 dense NAX is reachable only through raw _ext.v6_nax_forward (research arm). Relaxed screen admitting the mask-valid TQ in {1,2,4} pairs (6) x 3 BK = 18 tile configs x 2 D x 2 dtype x 3 N = 216 cells, but every TQ>1 cell must pass an oracle-correctness gate first (Apple static_assert expects TQ=1; compilability/correctness unverified). B.H is held at one representative point (measured reval used B=1 self-attn); a secondary B.H sweep multiplies the cell count. Knob-driven (JIT recompile, no C++ rebuild): BQ,BK,WM,BD,SINGLE_OTILE,USE_NAX,RELAXED_PRECISION,UNROLL_MODE,FORCE_DYNAMIC_K,MAX_THREADS + routing gates DENSE_MIN_N/DISABLE_V6_DENSE. Codegen-only (need source variant + rebuild): kU=16, the TQ==1 BQ/WM coupling, and the (unimplemented) Morton walk.",
+        "dispatch_reads": [
+          "mlx_mfa/attention.py:521 reads MFA_V6_DENSE_MIN_N (default 2048, :52) — N>=threshold gate",
+          "mlx_mfa/attention.py:535 reads MFA_DISABLE_V6_DENSE (opt-out -> sdpa)",
+          "mlx_mfa/attention.py:526 hardcodes head_dim==128 (D=64 dense NOT routed to NAX; -> sdpa, ROUTING.md:22)",
+          "routed kernel _make_v6nax_dense_custom (attention.py:6056-6091) calls _ext.v6_nax_forward(q,k,v,causal,True,scale) with NO tile override — tiles come from the C++ primitive defaults/env",
+          "csrc/mfa_v6_nax_primitive.cpp:354-356 reads MFA_V6_NAX_BQ/BK/WM at codegen (so an env sweep DOES steer the routed dense kernel)",
+          "csrc/mfa_v6_nax_primitive.cpp:363 reads MFA_V6_NAX_D_SUBTILE; :314 SINGLE_OTILE; :328 MFA_V6_USE_NAX; :467 RELAXED_PRECISION; :485 UNROLL_MODE; :432 FORCE_DYNAMIC_K; :950 MAX_THREADS",
+          "VESTIGIAL (read but no effect on NAX kernel): MFA_V6_BLOCK_R/BLOCK_C/EXEC_SG at :308-311, warned at :917-921"
+        ],
+        "prod_shapes": [
+          "D=128, fp16/bf16, N>=2048, plain self-attn (no attn_bias / window / dropout / return_attn_weights), matching q/k dtype and k_seqlen==q_seqlen -> terminal nax_dense (ROUTING.md:21,25-27; attention.py:521-537). Measured 30/07: D128 N4096 fp16 1.067x/1.071x (reval_A_dense), 1.08x (reval_E_dense)",
+          "Representative prod N band for the screen: {2048 (gate floor), 4096 (measured), 8192}",
+          "D=64 plain forward -> SDPA in production (ROUTING.md:22). Kernel SUPPORTS D=64 (primitive defaults BQ=32/BK=32/WM=2, :341/:347/:348) but it is reachable only via raw _ext.v6_nax_forward (research arm) — not env-routable",
+          "GQA self-attn (Hq%Hk==0) keeps single_otile=true and is eligible (primitive:306); cross-attn / Hq not divisible by Hk falls out of the NAX single-otile path"
+        ],
+        "open_questions": [
+          "M5 doctrine BK=128 is UNTESTED for dense fwd — current default BK=32 (:347, autotuned only over BK). single_otile+bypass makes tgmem=0 (NAAttentionKernel.cpp:67), so BK=128 is NOT threadgroup-memory-blocked; the real ceiling is cooperative-tensor register pressure (TK=BK/16=8 QK frags). Needs a measured register/occupancy sweep, not assumed.",
+          "Morton walk (3rd doctrine element) is NOT implemented for the dense NAX forward (createV6NAXSource uses plain tgid, :2782-2793). Potential occupancy/L2-locality win is unmeasured and needs a source variant + rebuild — flag, do not assume.",
+          "TQ>1 tiles (BQ=WM*32, e.g. (64,2),(128,4)) satisfy the BQ%(WM*16)==0 mask but trip the Apple 'expected TQ=1' static_assert (:2809) — compilability and oracle-correctness UNVERIFIED; gate each before trusting any ratio.",
+          "WM=4 (D128 default) already equals the doctrine 2x2 simdgroups, so the only unexercised doctrine lever vs today's default is BK 32->128 (+Morton). The doctrine is NOT a fresh 3-axis space; it is one BK step plus a codegen feature.",
+          "Is a D=64 dense NAX prod route worth adding? Kernel is parity-by-identity per project memory Op-B, but attention.py hardcodes head_dim==128, leaving D=64 dense on SDPA. Autoresearch premise-validation (should not assume the D=64 SDPA choice is optimal on M5).",
+          "M1/M2-era optima cited in the task (BK=8@D256, BK=32/16 V3, D512 SDPA-optimal) belong to other families/hardware and were NOT re-confirmed for M5 dense D64/D128 — treat as hypotheses; the only M5-tuned datum in-source is 'BK=32 robustly beats BK=64 for D=64' (:342-346), itself worth re-stamping against current MLX/macOS per RULE 16 #7.",
+          "Coarse screen holds B.H at one point; the dense win band may be B.H-sensitive (reval measured a single self-attn geometry) — a B.H axis should be added before declaring a tile optimum."
+        ]
+      },
+      {
+        "family": "V6-NAX sparse — `v6nax_sparse` (BT32 non-causal) + causal-sparse. One JIT kernel (csrc/mfa_sparse_attention.cpp::sparse_kernel_source_v6nax), causal is a codegen-key bool on the same kernel; scalar_fallback is the genuine fallback. NOT the same codegen as the dense NAX kernel (csrc/mfa/v6_nax/NAAttentionKernel.cpp).",
+        "knob_axes": [
+          {
+            "knob": "MFA_LCSA_KERNEL_VERSION",
+            "domain": "{unset→auto, 'v1'/'scalar_fallback', 'v2'/'v6nax_sparse' (+aliases v6nax, v6-nax-sparse, v6_nax_sparse)}; auto returns v2 for D∈{64,128} else v1",
+            "source_site": "mlx_mfa/lcsa_nax.py:119 (decide_auto_version) + :62-71 alias map; csrc/mfa_sparse_attention.cpp:1077 (read_sparse_kernel_path_env)",
+            "sweepable_no_rebuild": true,
+            "notes": "Expert path selector. v2 still gated by C++ eligibility (D∈{64,128} AND block_tile==32 AND f16/bf16, mfa_sparse_attention.cpp:1218-1223); if ineligible it SILENTLY falls to scalar (:1224). which-binary = byteΔ vs scalar_fallback."
+          },
+          {
+            "knob": "MFA_NAX_SPARSE_DENSITY_CEILING",
+            "domain": "float, default 0.30; RESTRICT-ONLY (cannot widen _nax_sparse_route_viable). Effective (0.0, 0.30]",
+            "source_site": "mlx_mfa/attention.py:131-134 (_nax_sparse_density_ceiling), consumed at :3877; ENV_VARS.md:40",
+            "sweepable_no_rebuild": true,
+            "notes": "Secondary ceiling ANDed after the per-region predicate ceiling. Parse error → 0.30. Cannot add an unmeasured cell."
+          },
+          {
+            "knob": "sparse BQ (kV6NAXSparseBQ)",
+            "domain": "PINNED 32 (constexpr). API block_tile∈{16,32,64}: 32=native; 64→2×2-expand to BT32 (lcsa_nax.py:405-436); 16→scalar/SDPA (5.5× footgun avoided by tile gate)",
+            "source_site": "csrc/mfa_sparse_attention.cpp:40 (constexpr); eligibility :1221; (void)BT pin note :848; BT64 expand mlx_mfa/lcsa_nax.py:405-436",
+            "sweepable_no_rebuild": false,
+            "notes": "Mask-block faithfulness pin. NOT reachable by MFA_V6_NAX_BQ — that knob only reaches the DENSE kernel (mfa_v6_nax_primitive.cpp:354); the sparse cpp reads exactly one getenv (LCSA)."
+          },
+          {
+            "knob": "sparse BK (kV6NAXSparseBK)",
+            "domain": "PINNED 32 (constexpr)",
+            "source_site": "csrc/mfa_sparse_attention.cpp:41; used in K/V base advance :548-549 and causal bound :909-921",
+            "sweepable_no_rebuild": false,
+            "notes": "Codegen axis: would need a source variant + recompile. Does NOT follow the M5 BK=128 doctrine (that doctrine lives in the dense NAX kernel's Morton codegen)."
+          },
+          {
+            "knob": "sparse WM (kV6NAXSparseWM)",
+            "domain": "PINNED 2 (constexpr) → TG=WM*32=64 threads = 2 simdgroups per Q-block",
+            "source_site": "csrc/mfa_sparse_attention.cpp:42; rationale :849-857; grid/tg dispatch :1273-1278",
+            "sweepable_no_rebuild": false,
+            "notes": "Divisibility BQ%(WM*16)==0 also admits WM=1, but a measured WM=1 sweep was 3-4× slower AND wrong-but-finite (Category-A) → not exposed. This conflates a correctness failure with a perf loss (open question)."
+          },
+          {
+            "knob": "causal (codegen-key bool)",
+            "domain": "{False, True}; True requires qL==kL",
+            "source_site": "codegen csrc/mfa_sparse_attention.cpp:895-930 (causal_skip + causal_block MSL, ports dense NAAttentionKernel triangular form); routed by mlx_mfa/lcsa_nax.py:370-381",
+            "sweepable_no_rebuild": false,
+            "notes": "NOT an ENV knob — driven by the caller's causal= arg + predicate; JIT-keyed on causal (no manual recompile, but not ENV-sweepable). Default-ON within the measured window via the predicate (no env gate)."
+          },
+          {
+            "knob": "mask_ndim (codegen-key)",
+            "domain": "{2,3,4} = shared / per-head (Hq,NQ,NK) / per-batch-head (B,Hq,NQ,NK)",
+            "source_site": "csrc/mfa_sparse_attention.cpp:891-898 (mask_offset_expr) + cache key :1234",
+            "sweepable_no_rebuild": false,
+            "notes": "Call-shape-driven JIT key; changes mask addressing, not tile."
+          },
+          {
+            "knob": "structured_window_probe / _size (codegen-key)",
+            "domain": "bool + int window; requires block_tile==32",
+            "source_site": "csrc/mfa_sparse_attention.cpp:846-847, 871-881, 1146-1149, cache key :1237",
+            "sweepable_no_rebuild": false,
+            "notes": "Structured sliding-window sparse codegen variant; exists but NOT routed by the public flash_attention_sparse gate (density-only routing) — a structure-aware gate is an open lever."
+          },
+          {
+            "knob": "MFA_UNSAFE_D128_SPARSE",
+            "domain": "bool, default 0",
+            "source_site": "csrc/mfa_env.hpp (per mlx_mfa/_knobs.py:168-170); ENV_VARS.md:75",
+            "sweepable_no_rebuild": true,
+            "notes": "DIAGNOSTIC-ONLY: opens the D=128 sparse OOB guard for OS re-characterization (known-incorrect kernel). NOT a perf axis; never production. Orthogonal to the current D128→v6nax win path."
+          },
+          {
+            "knob": "MFA_ENABLE_V6_BACKWARD",
+            "domain": "bool, default 0 (sparse backward + BT64 handling)",
+            "source_site": "mlx_mfa/attention.py:3797, 3816, 3829-3836",
+            "sweepable_no_rebuild": true,
+            "notes": "Sparse-family BACKWARD gate: opts into the V6NAX sparse hybrid vjp (fwd NAX + SDPA-vjp bwd). Forward routing unaffected."
+          },
+          {
+            "knob": "MFA_V6_BWD_SPARSE_NATIVE",
+            "domain": "bool, default 0",
+            "source_site": "mlx_mfa/attention.py:3859-3860; ENV_VARS.md:35",
+            "sweepable_no_rebuild": true,
+            "notes": "Backward only: full-native sparse backward vs hybrid (research; usually slower than hybrid per inline bench :3843-3846)."
+          }
+        ],
+        "coarse_grid_cells": 288,
+        "grid_description": "Because the sparse kernel tile is fully PINNED in source (BQ=BK=32, WM=2 constexpr; only MFA_LCSA_KERNEL_VERSION + MFA_NAX_SPARSE_DENSITY_CEILING are ENV-sweepable, and neither changes the tile), the sparse-family autoresearch search space is a ROUTING/eligibility census over shape × density × regime, NOT a kernel-tile sweep. Coarse routing grid = D{64,128}(2) × N{4096,6144,8192}(3; N=2048 always→SDPA below SPARSE_NAX_MIN_N=4096, lcsa_nax.py:336) × B·H{1,4,12}(3; SPARSE_NAX_MEASURED_BH:335, unmeasured B·H NOT interpolated→SDPA) × causal{F,T}(2) × dtype{f16,bf16}(2) × density-band{≤0.05,≤0.10,≤0.25,≤0.30}(4; per-region ceilings SPARSE_NAX_DENSITY_CEILING=0.30, D64_BH12=0.25, D128_BH4=0.05, CAUSAL_BH4=0.10 at lcsa_nax.py:338-345) = 2·3·3·2·2·4 = 288 coarse cells. The predicate _nax_sparse_route_viable (lcsa_nax.py:350-402) actually ROUTES only a subset (~40-60 eligible cells; e.g. bf16 has just 1 causal cell :372-374 and only D128/BH12 non-causal :385-388; N8192 wins all measured B·H :391-393). For PERF characterization (not routing) each routed cell fans out over mask STRUCTURE {random-density, sw128, sw256, sw512} (ROUTING.md:56-59: win magnitude 2.5×→8.23× at similar density) — multiplying the census to ~1150 perf cells — but mask structure does NOT affect the routing decision (density-only gate). Head-line 288 = routing/eligibility census; kernel-tile axis contributes 1 (pinned).",
+        "prod_shapes": [
+          "Non-causal D128 N8192 B·H12 f16 d≤0.30 → v6nax_sparse; measured up to 8.23× (sw128) down to 2.50× (d0.30) — ROUTING.md:56-59 (reval_C_*)",
+          "Non-causal D64 N8192 B·H12 f16 d≤0.25 → v6nax_sparse; up to 4.58× — ROUTING.md:60",
+          "Non-causal D128 N8192 B·H4 f16 d≤0.05 → v6nax_sparse; up to 4.15× — ROUTING.md:60 / lcsa_nax.py:400-401",
+          "Non-causal D{64,128} N8192 B·H1 f16 d≤0.30 → v6nax_sparse (B·H=1 routes ONLY via the N=8192 all-cells branch lcsa_nax.py:391-393; B·H=1 at N∈[4096,8192)→SDPA)",
+          "Non-causal D128 N4096-8192 B·H12 f16 d≤0.30 → v6nax_sparse — lcsa_nax.py:396-397",
+          "Non-causal D64 N4096-8192 B·H12 f16 d≤0.25 → v6nax_sparse — lcsa_nax.py:398-399",
+          "Non-causal D128 N4096-8192 B·H4 f16 d≤0.05 → v6nax_sparse — lcsa_nax.py:400-401",
+          "Non-causal D128 N4096-8192 B·H12 bf16 d≤0.30 → v6nax_sparse (only measured bf16 non-causal region) — lcsa_nax.py:385-388",
+          "Causal D128 N4096 B·H4 f16 d≤0.10 → v6nax_sparse — lcsa_nax.py:375-376 (CAUSAL_BH4_DENSITY_CEILING)",
+          "Causal D128 N4096 B·H12 f16 d≤0.30 → v6nax_sparse — lcsa_nax.py:377-378",
+          "Causal D{64,128} N8192 B·H12 f16 d≤0.30 → v6nax_sparse; D128 N8192 B·H12 d0.30 measured 3.83×/3.86× — lcsa_nax.py:379-380, ROUTING.md:61-62",
+          "Causal D128 N4096 B·H4 bf16 d≤0.10 → v6nax_sparse (only measured bf16 causal cell) — lcsa_nax.py:372-374",
+          "N=6144 cells route (interpolated in [4096,8192]) but have NO July datum: random d0.05 B·H4 D128 2.65×, d0.30 B·H12 D128 2.19×, d0.25 B·H12 D64 1.95× — ROUTING.md:63-65 (out-of-scope evidence)",
+          "DELEGATED→sdpa: N=2048 (all), B·H=1 below N8192, density above region ceiling, sliding B·H=1 N4096, all unmeasured B·H — lcsa_nax.py:394-402, ROUTING.md:67-74"
+        ],
+        "dispatch_reads": [
+          "mlx_mfa/lcsa_nax.py (authoritative sparse predicate _nax_sparse_route_viable:350-402, constants:333-347, decide_auto_version:84-137, BT64 expand:405-436, sparse_attention_dispatch:450-590)",
+          "mlx_mfa/attention.py (flash_attention_sparse routing:3790-3889, _nax_sparse_density_ceiling:131-134, mask-geometry normalize:3899-3919)",
+          "csrc/mfa_sparse_attention.cpp (sparse_kernel_source_v6nax codegen, pinned tile constexpr:40-42, WM rationale:849-857, causal codegen:895-930, eligibility+silent-fallback:1218-1224, grid/tg dispatch:1270-1278, structured-window probe:846-881/1146-1149; exactly 1 getenv=LCSA:1077)",
+          "csrc/mfa_v6_nax_primitive.cpp (confirmed: MFA_V6_NAX_BQ/BK/WM/SINGLE_OTILE/D_SUBTILE read HERE:314-388,994-1006,1277-1291,1467-1476 — reach the DENSE/varlen NAX kernel, NOT the sparse kernel)",
+          "mlx_mfa/_knobs.py (knob registry: MFA_NAX_SPARSE_DENSITY_CEILING:80, MFA_LCSA_KERNEL_VERSION:79, MFA_UNSAFE_D128_SPARSE:168-170, sparse-tile knobs absent from sparse path)",
+          "docs/reference/ROUTING.md (sparse gate §2:31-74, measured ratios by region:55-65)",
+          "ENV_VARS.md (:35,40,74,75,110-111 sparse+NAX knob docs)",
+          "mlx_mfa/dispatch_policy.py (should_use_mfa generic sparse→MFA:593 — legacy coarse gate, NOT the β3 sparse-NAX route; decode/backward carveouts only)",
+          "csrc/mfa/v6_nax/NAAttentionKernel.cpp (createV6NAXSource — DENSE/GNA NAX codegen with Morton walk:310-314,477-502; this is where the M5 BK/Morton doctrine lives — the SPARSE kernel does NOT use it)"
+        ],
+        "open_questions": [
+          "M5 doctrine NOT applied to sparse: the documented M5 starting point (BK=128 / 2×2 simdgroups / Morton walk) lives ONLY in the dense NAX kernel (NAAttentionKernel.cpp:310-314). The sparse kernel is pinned to BQ=BK=32, WM=2 (2 simdgroups, per-Q-tile TG dispatch, NO Morton walk) for mask-block faithfulness. A larger-BK / 2×2 / Morton sparse variant was NEVER tried — untested whether it could win on M5. RE-TEST candidate.",
+          "WM=1 pin conflates correctness with perf: mfa_sparse_attention.cpp:855-857 rejects WM=1 as '3-4× slower AND wrong-but-finite (Category-A)'. Is the wrong-but-finite a fixable bug (which would re-open a WM sweep) or an intrinsic occupancy loss? The two claims should be separated before treating WM=2 as settled.",
+          "BT16 never given a native NAX kernel: BT is structurally pinned 32; sub-32 mask granularity routes to scalar/SDPA (the 5.5× footgun). Open whether BT16 is intrinsically infeasible for cooperative-tensor mask faithfulness or merely unbuilt.",
+          "bf16 coverage is measurement-limited, not kernel-limited: bf16 is just T=bfloat with no kernel change (mfa_sparse_attention.cpp:1211-1216), yet the gate admits only 1 causal + 1 non-causal bf16 region (lcsa_nax.py:372-388). Likely more winning bf16 cells exist — under-measured.",
+          "Density-only routing ignores mask STRUCTURE: win magnitude spans 2.5×→8.23× at similar density (sliding-window ≫ random), and a structured_window_probe codegen already exists (mfa_sparse_attention.cpp:846-881) but is NOT routed by the public gate. A structure-aware gate could route more aggressively / avoid marginal high-density cells.",
+          "N=2048 always delegates→SDPA (below SPARSE_NAX_MIN_N=4096) — treated as UNMEASURED, not a proven loss. Native sparse at N=2048 was never characterized on M5.",
+          "B·H deliberately NOT interpolated: only {1,4,12} measured (lcsa_nax.py:335); B·H∈(1,4), (4,12), and >12 all→SDPA. The B·H occupancy curve between/above measured points is an open census gap.",
+          "N=6144 routes by interpolation but has no locked datum (1.95–2.65×, ROUTING.md:63-65) — confirm on stable macOS.",
+          "ALL sparse ratios are β3-INDICATIVE (macOS 27 beta, Metal 32023.918, M5 Max, MLX 0.31.2, 2026-07-13 — lcsa_nax.py:329-332). Per RULE 16 §7 every ratio must be re-measured + re-stamped on stable macOS before being treated as verified; the SDPA baseline can move under the ratio with no repo change.",
+          "M1/M2 optima (BK=8@D256, BK=32/16 V3, D512 SDPA-optimal) named in the task are DENSE-kernel hypotheses and do not touch the sparse family — the sparse tile is a single pinned 32/32/2 point; no D256/D512 sparse path exists (D∈{64,128} only, lcsa_nax.py:334)."
+        ]
+      },
+      {
+        "family": "backward-D64 (v6 split backward) + decode-qL<=8/16 (gqa/vector/flash-decode). Both are M5/NAX autoresearch targets. Backward-D64 is DEFAULT-ON (opt-out MFA_DISABLE_V6_BACKWARD), routing mx.grad(flash_attention) at D=64,N>=2048,f16/bf16 to a 3-kernel V6NAX split backward (dQ + split-dV partials + split-dK partials, reduced by Python mx.sum over the WM slot dim). Decode-qL<=8/16 is a finite measured carveout that sets use_mfa=True for narrow GQA-decode corners, but its terminal is mfa_primitive = STEEL V2 simdgroup (parity-by-identity), NOT a NAX matmul2d kernel — decode has NO own NAX kernel today (gqa_decode_cider port is unwired; MFA_GQA_DECODE_CIDER is a removed ghost knob).",
+        "knob_axes": [
+          {
+            "knob": "MFA_DISABLE_V6_BACKWARD",
+            "domain": "bool {0,1}, default 0 (backward route ON)",
+            "source_site": "mlx_mfa/dispatch_policy.py:498 (read in _v6nax_backward_carveout); default doc ENV_VARS.md:33",
+            "sweepable_no_rebuild": true,
+            "notes": "FAMILY=backward. Family on/off. D64,N>=2048,f16/bf16 default-on since Phase II-0."
+          },
+          {
+            "knob": "MFA_ENABLE_V6_BACKWARD",
+            "domain": "bool {0,1}, default 0",
+            "source_site": "mlx_mfa/dispatch_policy.py:505",
+            "sweepable_no_rebuild": true,
+            "notes": "FAMILY=backward. Extends envelope to D=128 (+D64 non-causal already default-on). D128 bwd measured 0.46-0.58x = coverage-not-perf (dispatch_policy.py:490)."
+          },
+          {
+            "knob": "MFA_V6_BWD_KERNEL",
+            "domain": "enum {auto,split,fused,legacy_fused}, default 'auto' -> split",
+            "source_site": "mlx_mfa/attention.py:5933 (read), :5937-5941 (validated, raises on typo), :5970-5971 (auto->split)",
+            "sweepable_no_rebuild": true,
+            "notes": "FAMILY=backward. Selects kernel topology; each mode JIT-compiles its own Metal variant (no pip rebuild). fused requires D in {64,128} (attention.py:5984)."
+          },
+          {
+            "knob": "MFA_V6BWD_USE_FUSED",
+            "domain": "bool {0,1}, default 0 -> legacy_fused when 1",
+            "source_site": "mlx_mfa/attention.py:5942-5943",
+            "sweepable_no_rebuild": true,
+            "notes": "FAMILY=backward. Back-compat alias forcing the pre-v2.38 WM=1 legacy fused dKdV."
+          },
+          {
+            "knob": "MFA_V6BWD_WM",
+            "domain": "int, default 4 (Python split-path WM = number of partial slots reduced by mx.sum(axis=2))",
+            "source_site": "mlx_mfa/attention.py:5946 (_wm passed to dv_raw/dk_raw/fused); also read C++ dQ primitive:1722",
+            "sweepable_no_rebuild": true,
+            "notes": "FAMILY=backward. WM IS the split factor. NOTE inconsistency: dQ C++ default WM=2 (primitive:1717) vs split dV/dK default WM=4 (Python _wm) — both keyed to same env var but different unset-defaults."
+          },
+          {
+            "knob": "MFA_V6BWD_BQ / MFA_V6BWD_BK / MFA_V6BWD_WM (dQ kernel)",
+            "domain": "BQ default 32(D64)/64(D128); BK default 32; WM default 2(D64)/4(D128). BK must be multiple of 32 (paired 16x32x16 MMA, TK=BK/16 even; primitive:1570-1580)",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:1715-1723 (v6nax_dispatch_bwd_query)",
+            "sweepable_no_rebuild": true,
+            "notes": "FAMILY=backward. Baked as #define into JIT Metal source, cache-keyed -> value change triggers shader recompile, NOT extension rebuild. Comment (primitive:1712-1713): 'BK is perf-only for dQ, grad-identical'; D64 dQ BK autotuned 64->32."
+          },
+          {
+            "knob": "MFA_V6BWDV_BQ / _BK / _WM (split dV)",
+            "domain": "BQ default 64; BK default 32; WM default wm_ (=MFA_V6BWD_WM, default 4). BK multiple of 32",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:2082-2090 (v6nax_dispatch_bwd_dv); sparse variant 2222-2230",
+            "sweepable_no_rebuild": true,
+            "notes": "FAMILY=backward. dV = P^T@dO (no dS term, no D input). Primary auto=split kernel."
+          },
+          {
+            "knob": "MFA_V6BWDK_BQ / _BK / _WM (split dK)",
+            "domain": "BQ default 64; BK default 32; WM default wm_ (=4). BK multiple of 32",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:2456-2464 (v6nax_dispatch_bwd_dk)",
+            "sweepable_no_rebuild": true,
+            "notes": "FAMILY=backward. Primary auto=split kernel. split BK=32 gives measured 2.16-3.05x vs SDPA-vjp on M5/MLX-0.31.2."
+          },
+          {
+            "knob": "MFA_V6BWDF_BQ / _BK / _WM (fused dKdV, Option gamma)",
+            "domain": "BQ default 64; BK default 32; WM default wm_ (=4). BK=16 admitted ONLY here via II-8 odd-TK tail (generator_handles_odd_tk); all other bwd generators RAISE on BK=16",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:2662-2670 (v6nax_dispatch_bwd_fused_dkdv); guard primitive:1570-1580",
+            "sweepable_no_rebuild": true,
+            "notes": "FAMILY=backward. Only reached when MFA_V6_BWD_KERNEL=fused. Fused BK=16 is PARITY (1.00-1.03x) with split, not faster; the old 1.01-1.12x edge was withdrawn (II-6 corrupt math)."
+          },
+          {
+            "knob": "MFA_V6BWDKV_BQ / _BK / _WM (legacy fused dKdV)",
+            "domain": "BQ default 32; BK default 64(D64)/32(D128); WM default 1",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:1909-1917 (v6nax_dispatch_bwd_kv)",
+            "sweepable_no_rebuild": true,
+            "notes": "FAMILY=backward. Only reached via legacy_fused mode (MFA_V6BWD_USE_FUSED=1). Escape hatch."
+          },
+          {
+            "knob": "MFA_V6_BWD_SPARSE_NATIVE",
+            "domain": "bool {0,1}, default 0",
+            "source_site": "mlx_mfa/attention.py:3860 (get_bool_env_aliased); ENV_VARS.md:35",
+            "sweepable_no_rebuild": true,
+            "notes": "FAMILY=backward (sparse variant). Full-native sparse backward orchestration opt-in."
+          },
+          {
+            "knob": "backward shape gate: head_dim==64",
+            "domain": "hardcoded ==64 for the default-on branch",
+            "source_site": "mlx_mfa/dispatch_policy.py:495",
+            "sweepable_no_rebuild": false,
+            "notes": "FAMILY=backward. SOURCE constant (Python edit, no compile). Not env-overridable; D128 only via MFA_ENABLE_V6_BACKWARD."
+          },
+          {
+            "knob": "backward shape gate: seq_len>=2048 (qL floor)",
+            "domain": "hardcoded >=2048 (history: 4096->2048 at v2.39.2 after BK=16 fix)",
+            "source_site": "mlx_mfa/dispatch_policy.py:496,:503",
+            "sweepable_no_rebuild": false,
+            "notes": "FAMILY=backward. SOURCE constant. Below 2048 fused regressed (qL1024:0.85x, qL512:0.50x)."
+          },
+          {
+            "knob": "_M5_NAX_DECODE_EDGE_HEAD_DIM = 64",
+            "domain": "int constant 64",
+            "source_site": "mlx_mfa/dispatch_policy.py:167",
+            "sweepable_no_rebuild": false,
+            "notes": "FAMILY=decode. SOURCE constant (Python). Decode carveout is D=64 only."
+          },
+          {
+            "knob": "_M5_NAX_DECODE_EDGE_MAX_KV_LEN = 65536",
+            "domain": "int constant 65536 (kL upper bound, inclusive)",
+            "source_site": "mlx_mfa/dispatch_policy.py:168,:241",
+            "sweepable_no_rebuild": false,
+            "notes": "FAMILY=decode. SOURCE constant."
+          },
+          {
+            "knob": "_M5_NAX_DECODE_EDGE_ENVELOPES (per-qL kL-floor + GQA set)",
+            "domain": "{8:(min_kL=4096,GQA in {8}), 16:(min_kL=16384,GQA in {4,8,16})}; qL not in {8,16} -> return False",
+            "source_site": "mlx_mfa/dispatch_policy.py:169-174,:234-246",
+            "sweepable_no_rebuild": false,
+            "notes": "FAMILY=decode. THE key decode tuning surface — a finite envelope, not a general rule. SOURCE constant, NOT env-sweepable. Every adjacent cell (qL=4, kL<floor, causal) -> SDPA."
+          },
+          {
+            "knob": "MFA_FORCE_V2 / MFA_DISABLE_V2",
+            "domain": "bool {0,1}",
+            "source_site": "ENV_VARS.md:66; read csrc MFAEnvConfig / eval_gpu",
+            "sweepable_no_rebuild": true,
+            "notes": "FAMILY=decode. Select/exclude the STEEL V2 family the decode carveout lands on."
+          },
+          {
+            "knob": "MFA_V2_BQ64",
+            "domain": "bool {0,1}, default 0 -> BQ=32,WM=4; when 1 -> BQ=64,WM=8,TGP=256 (all gens)",
+            "source_site": "csrc/mfa_steel_fwd_v2.cpp:78-88 (select_steel_v2_block_config); default tile D64 = {BQ32,BK64,WM4} at :89",
+            "sweepable_no_rebuild": true,
+            "notes": "FAMILY=decode. Only ENV tile lever applicable to decode D=64 (MFA_V2_FORCE_BK is D=128-only). N=1024 regressed 0.62x -> BQ32 stays default."
+          },
+          {
+            "knob": "MFA_FORCE_SPLITK",
+            "domain": "bool {0,1}, default None (unset -> C++ occupancy heuristic)",
+            "source_site": "mlx_mfa/dispatch_policy.py:768 (should_use_splitk)",
+            "sweepable_no_rebuild": true,
+            "notes": "FAMILY=decode. qL=8/16 with large kL is grid-under-occupied -> V2 split-K fires. Forces split-K on/off."
+          },
+          {
+            "knob": "MFA_SPLITK_MAX_N_D{D}_C{c}_A{a}_W{...}",
+            "domain": "int (per-shape max-N calibration threshold); templated name (PREFIX_KNOBS)",
+            "source_site": "mlx_mfa/dispatch_policy.py:352-372 (_splitk_env_key), :781-791",
+            "sweepable_no_rebuild": true,
+            "notes": "FAMILY=decode. Runtime-templated env family; seq_len<=max_n gates split-K per shape."
+          },
+          {
+            "knob": "num_splits (V2 split-K + flash-decode)",
+            "domain": "heuristic: >=2 K-tiles/split, cap 32; V2 finds smallest s s.t. total_tgs*s>=gpu_cores; skip if total_tgs>=0.8*gpu_cores",
+            "source_site": "csrc/mfa_steel_fwd_v2.cpp:1616-1635 (compute_v2_num_splits); csrc/mfa_steel_fwd.cpp:1323-1329 (compute_num_splits, cap 32)",
+            "sweepable_no_rebuild": false,
+            "notes": "FAMILY=decode. HARDCODED heuristic (M1/M2-era cap 32); only togglable via MFA_FORCE_SPLITK. Re-tuning cap/target needs source edit + extension recompile."
+          },
+          {
+            "knob": "flash-decode activation gate (qL<=4 path)",
+            "domain": "N<=4 AND S>=256 AND f16/bf16 AND no block mask AND no rope",
+            "source_site": "csrc/mfa_attention.cpp:243-245",
+            "sweepable_no_rebuild": false,
+            "notes": "FAMILY=decode. Two-phase split-KV kernel (partial+reduce) for qL<=4 ONLY; qL=8/16 (>4) use V2 single-pass/split-K instead. SOURCE gate."
+          },
+          {
+            "knob": "MFA_FORCE_SAGE_DECODE / MFA_DISABLE_TQ_DECODE_SDPA",
+            "domain": "bool {0,1}, default 0",
+            "source_site": "ENV_VARS.md:70,:72",
+            "sweepable_no_rebuild": true,
+            "notes": "FAMILY=decode (alt paths). Sage decode experiment / TurboQuant decode SDPA bridge — separate decode branches, benchmark-backed strict promotion."
+          }
+        ],
+        "coarse_grid_cells": 750,
+        "grid_description": "Combined coarse autoresearch sweep ~750 cells, split ~510 backward + ~240 decode. BACKWARD-D64 (~510): the dominant auto=split path autotunes 3 kernels quasi-independently — dQ tile BQ{16,32,64} x BK{32,64,128} x WM{1,2,4} (validity: BQ%(16*WM)==0, BK%32==0) ~= 14 valid; split-dV ~=14; split-dK ~=14 -> ~42 tile configs; crossed with shape cells N{2048,4096,8192} x causal{T,F} x dtype{f16,bf16} = 12 -> 42*12 ~= 504 (+ fused/legacy_fused modes add ~1.3x on the subset that explores them). DECODE (~240): valid shape cells qL{8,16} x kL{4096,8192,16384,32768,65536} x GQA(qL8->{8}, qL16->{4,8,16}) x dtype{f16,bf16} = (1*5*1*2)+(1*5*3*2) = 40; crossed with the thin ENV lever set MFA_V2_BQ64{0,1} x MFA_FORCE_SPLITK{auto,0,1} = 6 -> 40*6 = 240. NOTE the asymmetry between the two families' tuning surfaces: backward exposes a rich ENV tile-knob grid (BQ/BK/WM per dQ/dV/dK, all JIT-recompile-no-rebuild), whereas decode's real tuning surface (the per-qL kL-floor + GQA envelope in dispatch_policy.py:169-174, and the num_splits cap) is SOURCE constants that need a Python/C++ edit, not an ENV sweep — so decode's autoresearch is mostly shape-characterization + a handful of source-variant recompiles, not a knob sweep.",
+        "prod_shapes": [
+          "backward D64 N=2048 f16/bf16 causal & non-causal (2.2-2.6x vs SDPA-vjp, Phase-I Track 2)",
+          "backward D64 N=4096 f16/bf16 causal (measured 2.50x/2.77x sdpa-vjp/v6, reval_A_bwd_*)",
+          "backward D64 N=8192 f16/bf16 (17.47 vs 44.54 ms B1 H8 fp16)",
+          "backward GQA: dK/dV emitted per-Hq head then group-summed (attention.py:6004+); valid GQA factors only",
+          "decode qL=8 D=64 GQA=8 non-causal f16/bf16 kL 4096-65536 (1.25x@4096, 1.39x@8192, 1.58x@16384, 1.62x@32768)",
+          "decode qL=16 D=64 GQA in {4,8,16} non-causal f16/bf16 kL 16384-65536",
+          "decode qL in {1,2,4}: NOT carved out (adjacent cells -> SDPA); qL<=4 with S>=256 would hit the separate flash-decode two-phase kernel",
+          "decode terminal = mfa_primitive (STEEL V2 simdgroup), tile D64 {BQ32,BK64,WM4}; NO own NAX kernel"
+        ],
+        "dispatch_reads": [
+          "which-binary backward: _dtrace.record('v6_split_backward','V6NAX split dQ/dV/dK (eligible)') at mlx_mfa/attention.py:6254",
+          "which-binary decode: _dtrace.record('mfa_primitive','steel/V2/V3/window') at mlx_mfa/attention.py:1318; carveout verbose print dispatch_policy.py:610-615",
+          "byteDelta fingerprint: backward vs SDPA-vjp (non-zero small ~ real NAX kernel; 0.0 ~ SDPA fallback); decode vs mx.fast.sdpa",
+          "ENV telemetry: MLX_MFA_VERBOSE_DISPATCH=1 (dispatch_policy.py:176), MLX_MFA_HOOK_TELEMETRY {off,summary,verbose} (ENV_VARS.md:46)",
+          "locks: tests/test_dispatch_map_lock.py (CI fails on unintended reroute), tests/test_v6_fused_bk16_tk1_lock.py (fused BK=16 odd-TK tail correctness), docs/reference/dispatch-map.md",
+          "source dumps: MFA_V6BWD_DUMP_SOURCE / MFA_V6BWDF_DUMP_SOURCE (+MFA_V6BWDF_DUMP_PATH) to capture the generated Metal for the backward kernels (primitive:1747-1749,2696-2698)"
+        ],
+        "open_questions": [
+          "M5 doctrine (BK=128 / 2x2 simdgroups / Morton walk) is NOT what V6NAX backward implements: dQ default is BK=32/WM=2 (D64) with a LINEAR tid.x walk (NAAttentionKernel.cpp:4083). The Morton walk (morton_decode_rectangular_2d) exists ONLY in the legacy STEEL simdgroup forward (createSource, NAAttentionKernel.cpp:310-314), never in the NAX matmul2d backward/forward. OPEN: does BK=128 + Morton tiling help the NAX backward on M5, or is BK=32 the M5 optimum? Untested.",
+          "Backward BK must be a multiple of 32 (paired 16x32x16 MMA, TK even; primitive:1570). The doctrine BK=128 is admissible (TK=8 even) but its M5 register-pressure impact on the split dV/dK/dQ kernels is untested — HYPOTHESIS to re-test, not settled.",
+          "Decode has NO own NAX kernel — the qL=8/16 carveout routes to STEEL V2 simdgroup (parity-by-identity). The gqa_decode_cider NAX port (MLX sdpa_vector_2pass identity) is UNWIRED and MFA_GQA_DECODE_CIDER is a removed ghost knob. OPEN per v2 campaign doctrine: write/measure an own NAX decode kernel vs STEEL identity.",
+          "num_splits cap=32 and 'target >=2 K-tiles/split' (compute_num_splits mfa_steel_fwd.cpp:1328; compute_v2_num_splits :1631) are M1/M2-era heuristics, hardcoded, never re-tuned for the M5 40-core estimate (estimate_gpu_cores arch_gen>=17 -> 40). HYPOTHESIS to re-test on M5.",
+          "Decode envelope asymmetry: qL=8 kL-floor=4096 but qL=16 kL-floor=16384 (dispatch_policy.py:171-173, 'consolidation remeasure'). qL in {1,2,4} entirely excluded. OPEN: is qL=4 or qL=16 at kL<16384 a genuine loss, or an unmeasured cell deliberately delegated?",
+          "Backward WM default inconsistency: dQ unset-default WM=2 (C++ primitive:1717) vs split dV/dK unset-default WM=4 (Python _wm, attention.py:5946) — both keyed to MFA_V6BWD_WM but diverge when unset. A deliberate joint WM sweep (dQ vs dV/dK partial-slot count) is a clean autoresearch axis not yet run.",
+          "All perf ratios are stamped MLX 0.31.2 / M5 Max / macOS 27 beta and marked beta-3 indicative (ROUTING.md:9) — RULE 16 #7: re-measure-and-stamp on stable macOS before treating any backward 2.5x or decode 1.6x as durable.",
+          "Backward carveout has_nax gate: the decode carveout requires has_nax=True (dispatch_policy.py:239) but runs a STEEL (non-NAX) binary — the has_nax gate is a proxy for M5, not proof the NAX path ran. Confirm which-binary by byteDelta, not by the has_nax flag."
+        ]
+      },
+      {
+        "family": "V6-NAX autoresearch census — three opt-in/native families: varlen (packed NAX), GNA (native 3-D window), conv3d spatial-pad. All three ride the same JIT-compiled NAX matmul2d datapath (createV6NAXSource in csrc/mfa/v6_nax/NAAttentionKernel.cpp; conv uses the separate MPP matmul2d in csrc/mfa_conv_nax.cpp), so a param change recompiles the MSL at runtime and re-keys the pipeline cache — NO C++ extension rebuild is needed to sweep any MFA_* knob. \"Rebuild\" below means editing a hardcoded C++ constexpr / Python module constant and re-running pip install -e (or just re-importing, for Python constants).",
+        "knob_axes": [
+          {
+            "knob": "MFA_V6_NAX_BQ",
+            "domain": "BQ, multiple of WM*16; coarse {16,32,64,128}. Default D64=32, D128=64 (varlen/GNA share the same C++ default logic)",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:341 (default), :354/:994/:1277 (env read); baked at NAAttentionKernel.cpp:389 {{BLOCK_DIMENSIONS_PARALLELIZATION}}",
+            "sweepable_no_rebuild": true,
+            "notes": "LIVE tile axis for the dispatched NAX kernel. Validity gate BQ%(WM*16)==0 (primitive:368). getenv_aliased so V34 aliases resolve."
+          },
+          {
+            "knob": "MFA_V6_NAX_BK",
+            "domain": "BK, positive multiple of 32 (TK=BK/16 must be even → paired 16x32x16 MMA); coarse {32,64,128}. Default 32 for ALL D",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:347 (default 32, autotuned), :355 (env), :384 (BK%32 guard)",
+            "sweepable_no_rebuild": true,
+            "notes": "M5 doctrine BK=128 is NOT the current default (32 is) — OPEN. BK=16 raises (would reproduce II-6 OOB)."
+          },
+          {
+            "knob": "MFA_V6_NAX_WM",
+            "domain": "executionSIMDGroups; coarse {1,2,4}. Default D64=2, D128=4",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:348 (default), :356 (env); baked at NAAttentionKernel.cpp EXECUTION_SIMD_GROUPS",
+            "sweepable_no_rebuild": true,
+            "notes": "M5 '2x2 simdgroups' doctrine = WM=2; current D128 default is WM=4 — OPEN. Header static_asserts require single-SG cooperative scope, so WM steers grid, not per-TG SG count of the map_index pattern."
+          },
+          {
+            "knob": "MFA_V6_NAX_D_SUBTILE",
+            "domain": "BD head sub-tile, multiple of 16 ≤ head_dim. Default = head_dim (128 when D>=256)",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:352 (default), :363/:997 (env); baked at NAAttentionKernel.cpp:392 {{BLOCK_DIMENSIONS_HEAD}}",
+            "sweepable_no_rebuild": true,
+            "notes": "Only meaningful for D>=256 replayed-head path; inert for D64/128."
+          },
+          {
+            "knob": "MFA_V6_NAX_SINGLE_OTILE",
+            "domain": "bool; default auto = (Hq==Hk || Hq%Hk==0)",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:314 (env), :306 (auto default), :1288 (varlen forces =1)",
+            "sweepable_no_rebuild": true,
+            "notes": "Packed-varlen REQUIRES single-Otile (=0 raises, primitive:1291). Post-F-3 the non-single-Otile V6 path is off dispatch."
+          },
+          {
+            "knob": "MFA_V6_RELAXED_PRECISION",
+            "domain": "bool; default 1 (relaxed_precision ON in matmul2d descriptor)",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:467-482 (source rewrite), :926, :1300",
+            "sweepable_no_rebuild": true,
+            "notes": "Codegen axis toggled by post-generation string replace → distinct JIT pipeline, no rebuild. Correctness/perf trade — sweep."
+          },
+          {
+            "knob": "MFA_V6_UNROLL_MODE",
+            "domain": "enum {full,none,2,4}; default full",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:485-494 (pragma replace), :929",
+            "sweepable_no_rebuild": true,
+            "notes": "K-loop unroll pragma rewrite; distinct JIT pipeline. Multiplies the tile grid."
+          },
+          {
+            "knob": "MFA_V6_MAX_THREADS",
+            "domain": "int pipeline maxTotalThreadsPerThreadgroup bucket (cache-keyed via axis_flags bits 7-9)",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:950",
+            "sweepable_no_rebuild": true,
+            "notes": "Occupancy lever independent of tile; coarse {default, 256, 512, 1024}."
+          },
+          {
+            "knob": "MFA_V6_FORCE_DYNAMIC_K",
+            "domain": "bool; default 0",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:1299 (axis_flags 0x01); source uses dynamic_length_v<int> for K",
+            "sweepable_no_rebuild": true,
+            "notes": "Compile-time vs dynamic K extent; affects register/unroll behaviour."
+          },
+          {
+            "knob": "MFA_V6_BYPASS_TGP",
+            "domain": "bool; default 0 (Path A cooperative->cooperative)",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:311, :906",
+            "sweepable_no_rebuild": true,
+            "notes": "single-Otile forces bypass on regardless (primitive:317-ff), so limited free DOF on the live path."
+          },
+          {
+            "knob": "MFA_V6_BLOCK_R / MFA_V6_BLOCK_C / MFA_V6_EXEC_SG",
+            "domain": "ints; documented defaults 32/32/4 — but VESTIGIAL post-F-3",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:281-290 (vestigial note), :308-310, :915-919 (warn)",
+            "sweepable_no_rebuild": true,
+            "notes": "NO EFFECT on the dispatched NAX kernel (feed the removed simdgroup descriptor). Excluding these is mandatory — sweeping them yields VACUOUS benchmarks (RULE 16 #8, byteDelta=0)."
+          },
+          {
+            "knob": "MFA_ENABLE_VARLEN_NAX",
+            "domain": "bool route gate; default 0 (opt-in, beta-3)",
+            "source_site": "mlx_mfa/attention.py:6659; ROUTING.md §5",
+            "sweepable_no_rebuild": true,
+            "notes": "Gates the entire packed-varlen NAX route. D=128 ONLY (attention.py:6665)."
+          },
+          {
+            "knob": "VARLEN tile pin BQ=32/BK=32/WM=2",
+            "domain": "fixed Python constants passed as explicit tiles; C++ default for D128 would be BQ64/BK32/WM4",
+            "source_site": "mlx_mfa/attention.py:6641-6643 (constants), :6906 (passed to _ext.v6_nax_varlen_forward); C++ default primitive:1269-1271",
+            "sweepable_no_rebuild": false,
+            "notes": "Public varlen route passes EXPLICIT tiles → MFA_V6_NAX_BQ/BK/WM are IGNORED (explicit_tiles branch primitive:1272-1276). To sweep varlen tiles: edit the 3 Python constants (re-import, no C++ rebuild) OR call _ext.v6_nax_varlen_forward directly. OPEN: is 32/32/2 optimal, or should varlen match dense D128 64/32/4?"
+          },
+          {
+            "knob": "VARLEN workload envelope",
+            "domain": "B=1, D=128, dtype f16/bf16, num_seqs in {20,24}, total_len in [35018,35250], GQA in {2,4,8}, cu_q==cu_k",
+            "source_site": "mlx_mfa/attention.py:6644-6647 (constants), :6663-6671 (predicate)",
+            "sweepable_no_rebuild": true,
+            "notes": "Workload axis (defines the shape, not kernel tuning). Envelope deliberately narrow (single SeedVR2-class geometry)."
+          },
+          {
+            "knob": "MFA_VARLEN_TRUST_METADATA",
+            "domain": "bool; default 0",
+            "source_site": "mlx_mfa/_knobs.py:84; ENV_VARS.md:44",
+            "sweepable_no_rebuild": true,
+            "notes": "Perf opt-out: skips host cu_seqlens/tile_offsets value-validation sync; kernel bounds-guards remain."
+          },
+          {
+            "knob": "MFA_DISABLE_GNA_NATIVE",
+            "domain": "bool route gate; default 0 (native enabled)",
+            "source_site": "mlx_mfa/attention.py:4227; ENV_VARS.md:30",
+            "sweepable_no_rebuild": true,
+            "notes": "=1 routes GNA to differentiable sparse fallback (make_gna_mask, attention.py:4304). Also the only way to backprop GNA (native is forward-only, no VJP)."
+          },
+          {
+            "knob": "_GNA_NAX_D128_MIN_N / _GNA_NAX_D64_MIN_N",
+            "domain": "N thresholds; defaults 2048 (D128) / 4096 (D64)",
+            "source_site": "mlx_mfa/attention.py:167-168; eligibility :4236-4237",
+            "sweepable_no_rebuild": false,
+            "notes": "Python module constants (not env). Below threshold -> gna_steel (D128) or sparse. Re-import to change; no C++ rebuild."
+          },
+          {
+            "knob": "MFA_GNA_NAX_BQ",
+            "domain": "int; default (D64 || (D128 && N>=8192)) ? 32 : 64",
+            "source_site": "csrc/mfa_gna_nax.cpp:577 (default), :580 (env); guard BQ%(WM*16)==0 :587",
+            "sweepable_no_rebuild": true,
+            "notes": "GNA has its OWN tile defaults (separate from MFA_V6_NAX_*). D128 large-N switches to finer BQ32/WM2 skip granularity — crossover N=8192 is a hypothesis."
+          },
+          {
+            "knob": "MFA_GNA_NAX_BK",
+            "domain": "int, multiple of 32; default 32",
+            "source_site": "csrc/mfa_gna_nax.cpp:578 (default), :581 (env), :590 (BK%32 guard)",
+            "sweepable_no_rebuild": true,
+            "notes": "Pinned to 32 by default across all D/N."
+          },
+          {
+            "knob": "MFA_GNA_NAX_WM",
+            "domain": "int; default (D64 || (D128 && N>=8192)) ? 2 : 4",
+            "source_site": "csrc/mfa_gna_nax.cpp:579 (default), :582 (env)",
+            "sweepable_no_rebuild": true,
+            "notes": "Couples with BQ via BQ%(WM*16)==0."
+          },
+          {
+            "knob": "MFA_GNA_NAX_PRECOMPUTE_RANGE",
+            "domain": "bool; default 0",
+            "source_site": "csrc/mfa_gna_nax.cpp:584 (env), :126 (#define GNA_PRECOMPUTE_RANGE), :334/:345 (#if branches)",
+            "sweepable_no_rebuild": true,
+            "notes": "Codegen #define -> distinct JIT source variant (no rebuild). Also selectable via public MFA_GNA_NAX_PRECOMPUTE_RANGE=1 (the '_pr1' variant, ENV_VARS.md:39)."
+          },
+          {
+            "knob": "MFA_GNA_NAX_SWIZZLE_LOG",
+            "domain": "nonnegative int; default 0 (no swizzle)",
+            "source_site": "csrc/mfa_gna_nax.cpp:586 (env), :127 (#define GNA_SWIZZLE_LOG), :292-297 (tid swizzle)",
+            "sweepable_no_rebuild": true,
+            "notes": "GNA's own L2-locality tile-swizzle (analogous to the Morton walk in the attention kernel). Coarse {0,1,2,3}."
+          },
+          {
+            "knob": "GNA window params (seq_shape, window_size, stride, scale)",
+            "domain": "runtime call args: 3-D (dim0,dim1,dim2),(w0,w1,w2),(s0,s1,s2),scale; must satisfy prod(seq_shape)==N",
+            "source_site": "mlx_mfa/attention.py:4245-4251 (dispatch); baked into header+cache-key csrc/mfa_gna_nax.cpp:601-607",
+            "sweepable_no_rebuild": true,
+            "notes": "Window geometry is codegen-baked into the JIT header AND the kernel_name (each distinct tuple = distinct pipeline), but is set via call args, not env — sweep without rebuild. Prod: ROUTING measured 3-D 1x7x7 @ D128 N4096; docstring example (8,32,32) window (2,8,8)."
+          },
+          {
+            "knob": "MFA_ENABLE_CONV3D_SPATIAL_PAD_SLICE",
+            "domain": "bool route gate; default 0 (opt-in)",
+            "source_site": "mlx_mfa/_auto_hooks.py:342; ENV_VARS.md:38; ROUTING.md §7",
+            "sweepable_no_rebuild": true,
+            "notes": "Gates the SeedVR2 H/W%8 spatial pad-and-slice rescue in the mx.conv_general hook."
+          },
+          {
+            "knob": "_CONV3D_SPATIAL_PAD_FAMILIES allowlist",
+            "domain": "set of 4 input (T,H,W,C_in,C_out): {(4,108,132,512,512),(5,108,132,512,512),(3,54,66,512,512),(4,54,66,512,512)}",
+            "source_site": "mlx_mfa/_auto_hooks.py:306-311; family/shape constraints :349-360",
+            "sweepable_no_rebuild": false,
+            "notes": "Python set (additive edit, re-import — not env, not C++ rebuild). Hard constraints: fp16, B=1, 3x3x3, pad (0,0,1,1,1,1), H/W not %8. To add a shape you edit this set."
+          },
+          {
+            "knob": "MFA_DISABLE_CONV3D_MPP",
+            "domain": "bool; default 0 (MPP conv route enabled)",
+            "source_site": "csrc/mfa_conv_nax.cpp:548; ENV_VARS.md:81",
+            "sweepable_no_rebuild": true,
+            "notes": "Master opt-out for the whole MPP conv3d NAX path (the pad-slice rescue calls conv3d_nax_forward, which is MPP)."
+          },
+          {
+            "knob": "MFA_CONV3D_PAD_RATIO_MAX",
+            "domain": "float; default 12.0",
+            "source_site": "mlx_mfa/_auto_hooks.py:294; ENV_VARS.md:84",
+            "sweepable_no_rebuild": true,
+            "notes": "Applies to the SIBLING channel pad-slice (MFA_ENABLE_CONV3D_PAD_SLICE), not the spatial family; expansion-ratio cost gate."
+          },
+          {
+            "knob": "conv matmul2d tile M_TILE/N_TILE/K_TILE, EXEC_SIMDGROUPS",
+            "domain": "hardcoded constexpr 32/32/32, sg=1",
+            "source_site": "csrc/mfa_conv_nax.cpp:34-37",
+            "sweepable_no_rebuild": false,
+            "notes": "CODEGEN axis with NO env knob — needs a C++ source variant + pip install -e to change. This is the conv analogue of BK/BQ; whether a larger (M5 BK=128) matmul2d tile helps conv is UNTESTED."
+          },
+          {
+            "knob": "conv spatial tile TW x TH",
+            "domain": "occupancy-auto {16x16 if >=64 TGs, else 8x8}",
+            "source_site": "csrc/mfa_conv_nax.cpp:579-585",
+            "sweepable_no_rebuild": false,
+            "notes": "CODEGEN selection, no env override — auto-picked from output geometry/occupancy. 16x16 measured underoccupied (0.85x) at 32 TGs on 40 cores."
+          },
+          {
+            "knob": "MFA_CONV_NAX_NO_FAST_PATH / MFA_CONV_NAX_USE_PYTHON_LEGACY",
+            "domain": "bool; default 0 / 0",
+            "source_site": "csrc/mfa_conv_nax.cpp:609; mlx_mfa/conv_nax.py:556/:953",
+            "sweepable_no_rebuild": true,
+            "notes": "Diagnostics/comparison: disable the 1x1x1 fast path / route through the Python legacy impl."
+          }
+        ],
+        "coarse_grid_cells": 202,
+        "grid_description": "Coarse PRIMARY grid ~= 202 cells across the three families, dominated by the shared V6-NAX forward tile shape. Shared NAX tile primary grid = valid(BQ,WM) x BK = 9 x 3 = 27 cells, where valid(BQ,WM) with BQ%(WM*16)==0 over BQ in {16,32,64,128}, WM in {1,2,4} = {(16,1),(32,1),(64,1),(128,1),(32,2),(64,2),(128,2),(64,4),(128,4)} and BK in {32,64,128}. Per-family: (a) VARLEN ~= 54 = 27 tiles x dtype{f16,bf16}2 (workload envelope fixed to the single SeedVR2 geometry; note the public route PINS 32/32/2 so tile sweeps require the _ext/explicit-tiles path or a Python-constant edit); (b) GNA ~= 144 = valid(BQ,WM)9 x BK{32}1 x PRECOMPUTE{0,1}2 x SWIZZLE_LOG{0,1,2,3}4 x D{64,128}2 (window geometry is a separate workload axis, not counted); (c) CONV3D ~= 4 = the 4 allowlist shapes (fp16-only, ZERO tunable tile knobs — matmul2d tile is a hardcoded 32^3 constexpr and spatial TW/TH is occupancy-auto). Sum ~= 202. SECONDARY per-config multipliers apply mainly to the two attention families and expand the space ~8x: MFA_V6_UNROLL_MODE{full,none,2,4}4 x MFA_V6_RELAXED_PRECISION{0,1}2, plus MFA_V6_MAX_THREADS (coarse ~3-4) and MFA_V6_FORCE_DYNAMIC_K{0,1} — full attention grid ~= (54+144)x8 ~= 1584, plus conv3d's 4 (untunable without a C++ source variant), i.e. ~1590 total at full secondary depth. Every cell is JIT-recompiled + pipeline-cache re-keyed at runtime, so a full sweep needs NO extension rebuild EXCEPT the conv matmul2d/spatial tile (hardcoded constexpr) and the varlen tile / allowlist / GNA-threshold Python constants.",
+        "prod_shapes": [
+          "CONV3D spatial-pad (input T,H,W,C_in,C_out), fp16 B=1 3x3x3 pad(0,0,1,1,1,1): (4,108,132,512,512) family#1, (5,108,132,512,512) family#1, (3,54,66,512,512) family#2, (4,54,66,512,512) family#2 — SeedVR2 VAE /debug/116-117 (_auto_hooks.py:306-311; ROUTING.md §7). Measured native/spatial-pad 1.06-1.37x (inT3) / 2.15-2.49x (inT4), +38.78s / 9.3% E2E on the 108x132 pair.",
+          "VARLEN packed NAX: B=1, D=128, f16/bf16, num_seqs in {20,24}, total_len in [35018,35250], GQA in {2,4,8}, tile BQ32/BK32/WM2 — 16 measured geometries, median 1.329x/1.344x vs SDPA (attention.py:6644-6647; ROUTING.md §5).",
+          "GNA native 3-D window: D=128 N>=2048 or D=64 N>=4096, f16/bf16; measured 3-D window 1x7x7 @ D128 N4096 = 2.39x/2.44x; docstring canonical (8,32,32) window (2,8,8) stride (1,1,1) sliding / stride=window blocked (attention.py:167-168,4166-4175; ROUTING.md §6).",
+          "Shared dense-NAX context (not one of the 3 families but the same kernel): D=128 f16/bf16 N>=MFA_V6_DENSE_MIN_N(2048) plain self-attn -> nax_dense; D128 N4096 fp16 parity-to-1.08x (ROUTING.md §1, attention.py:52/521/537)."
+        ],
+        "dispatch_reads": [
+          "VARLEN: mlx_mfa/attention.py:6650 _varlen_v6nax_eligible; :6659 MFA_ENABLE_VARLEN_NAX gate; :6663-6671 (B=1, f16/bf16, D==128, num_seqs, total_len, GQA, cu_q==cu_k); :6902 dispatch _ext.v6_nax_varlen_forward; :6906 passes BQ32/BK32/WM2 + causal + scale. C++ tile defaults/overrides csrc/mfa_v6_nax_primitive.cpp:1265-1293.",
+          "GNA: mlx_mfa/attention.py:4227 MFA_DISABLE_GNA_NATIVE; :4230-4239 gna_nax_eligible (3-D, f16/bf16, has_nax, D128 N>=2048 | D64 N>=4096); :4244-4251 dispatch _ext.mfa_gna_nax_forward(...,seq_shape,window,stride,scale); :4270-4285 STEEL fallback (D128); :4303-4305 sparse fallback make_gna_mask. Tile/codegen defaults csrc/mfa_gna_nax.cpp:576-586, header/name :601-607.",
+          "CONV3D: mlx_mfa/_auto_hooks.py:332 _try_conv3d_spatial_pad_and_slice; :342 MFA_ENABLE_CONV3D_SPATIAL_PAD_SLICE gate; :347-360 (fp16, B=1, allowlist family, 3x3x3, pad(0,0,1,1,1,1), H/W not %8); :358-361 roundup H/W to 8; :363 dispatch _ext.conv3d_nax_forward. MPP route/tile csrc/mfa_conv_nax.cpp:548 (MFA_DISABLE_CONV3D_MPP), :568-596 (family gate + occupancy tile pick), :34-37 (fixed 32^3 matmul2d tile).",
+          "Shared NAX forward tile resolution (all 3 families): csrc/mfa_v6_nax_primitive.cpp:341-388 (defaults + MFA_V6_NAX_BQ/BK/WM/D_SUBTILE/SINGLE_OTILE + validity guards); :467-494 (RELAXED_PRECISION, UNROLL_MODE source rewrites). Codegen substitution csrc/mfa/v6_nax/NAAttentionKernel.cpp:389-394 (BLOCK_DIMENSIONS_*/HEAD_DIMENSION), :307-317 (Morton walk row_group_bits/head_bits)."
+        ],
+        "open_questions": [
+          "M5 doctrine BK=128 / 2x2 simdgroups (WM=2): the Morton rectangular walk IS implemented and always-on for the single-Otile path (NAAttentionKernel.cpp:307-317), but the CURRENT dispatched defaults are BK=32 (all D, autotuned primitive:347) and WM=4 for D128 / WM=2 for D64 (primitive:348) — so BK=128 and D128-WM=2 are NOT the shipped optimum. Re-test BK in {32,64,128} x WM in {2,4} as the primary M5 autoresearch sweep.",
+          "M1/M2 optima are unverified on M5 and must be re-measured, not assumed: 'BK=8 @ D256', 'V3 BK 32/16', 'D512 SDPA-optimal'. The current D>=256 path uses a replayed head sub-tile BD=128 (primitive:352); D512 dense is a documented NO-GO (SDPA wins, MEMORY.md) — re-confirm on stable macOS.",
+          "VARLEN public route PINS BQ32/BK32/WM2 via Python constants (attention.py:6641-6643) and passes them as explicit tiles, so MFA_V6_NAX_BQ/BK/WM are IGNORED on that route (explicit_tiles branch primitive:1272). Open: is 32/32/2 optimal for the D128 packed-varlen shape, or should it inherit the dense-D128 64/32/4? Sweeping requires the _ext/explicit-tiles path (not env).",
+          "GNA D128 large-N crossover: default flips to the finer BQ32/WM2 skip granularity at N>=8192 (mfa_gna_nax.cpp:576-579) — the 8192 boundary and the BQ64/WM4 vs BQ32/WM2 choice per (window,stride,density) are a hypothesis; MFA_GNA_NAX_SWIZZLE_LOG (L2 swizzle) and PRECOMPUTE_RANGE are un-swept research DOF.",
+          "CONV3D has NO tunable tile knob: the MPP matmul2d tile is a hardcoded 32/32/32 constexpr (mfa_conv_nax.cpp:34-37) and the spatial TW/TH is occupancy-auto (16x16 vs 8x8, :579-585). Testing an M5 BK=128-class conv tile or a non-32 matmul2d tile needs a C++ source variant + rebuild — not reachable by ENV sweep. 16x16 measured underoccupied (0.85x) at 32 TGs.",
+          "MUST EXCLUDE from any autoresearch sweep: MFA_V6_BLOCK_R / MFA_V6_BLOCK_C / MFA_V6_EXEC_SG are VESTIGIAL post-F-3 (feed the removed simdgroup descriptor; primitive:281-290,915-919). Sweeping them produces byteDelta=0 vacuous benchmarks (RULE 16 #8). Confirm engagement via runtime fingerprint / MFA_V6_DUMP_SOURCE, not source-tracing.",
+          "conv3d spatial-pad E2E win is beta-3 indicative (macOS 27 beta, MLX 0.31.2); family #2 (54x66) E2E confirmation is deferred to SeedVR2 /debug/118 (~8s predicted, _auto_hooks.py:296-305). All perf claims here are unstamped-on-stable — re-measure + version-stamp per RULE 16 #7."
+        ]
+      },
+      {
+        "family": "v6_nax_attention_autoresearch (dense-forward tile autotune is the primary env-sweepable envelope; sub-families: sparse, backward, decode-edge, varlen, GNA — all NAX matmul2d/cooperative-tensor, M5 Max / macOS 27 beta / MLX 0.31.2)",
+        "knob_axes": [
+          {
+            "knob": "MFA_V6_NAX_BQ",
+            "domain": "positive int, must satisfy BQ%(WM*16)==0; defaults D64=32, D128=64",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:341 (default), :354/:994 (env read), :368 (validate); ENV_VARS.md:110",
+            "sweepable_no_rebuild": true,
+            "notes": "Parallelization tile (Q rows). Env->new JIT source string->new cache key->Metal recompile at runtime, NO pip rebuild. Flows through the same source/cache/dispatch contract as public routes (nax_bq_override, :360)."
+          },
+          {
+            "knob": "MFA_V6_NAX_BK",
+            "domain": "positive multiple of 32 (TK=BK/16 must be even); default 32 for ALL D",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:347 (default), :355/:995 (env), :384 (validate BK%32==0); ENV_VARS.md:110",
+            "sweepable_no_rebuild": true,
+            "notes": "Traversal tile (K cols). M5 doctrine says BK=128 is the M5 starting point, BUT the on-repo NAX-autotune (research/nax-autotune-m5, M5 Max) found BK=32 robustly fastest for D=64 (:342-346) and it is the D=128 default — DIRECT CONTRADICTION, flagged as open. BK=128 is env-valid (128%32==0)."
+          },
+          {
+            "knob": "MFA_V6_NAX_WM",
+            "domain": "{2,4,8} subject to BQ%(WM*16)==0; defaults D64=2, D128=4",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:348 (default), :356/:996 (env), :403 (feeds executionSIMDGroups)",
+            "sweepable_no_rebuild": true,
+            "notes": "Threadgroup-level simdgroup count (flash-attention row split). The M5 doctrine '2x2 simdgroups' = WM=4 is ALREADY the D128 default here. Distinct from the matmul2d execution scope which is codegen-FIXED at <1> (see MATMUL2D_EXEC_SG axis)."
+          },
+          {
+            "knob": "MFA_V6_NAX_D_SUBTILE",
+            "domain": "16-aligned divisor of head_dim; D<256 MUST equal head_dim (fixed); D>=256 default 128",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:352/:992 (default), :363/:997 (env), :390-397 (validate)",
+            "sweepable_no_rebuild": true,
+            "notes": "Head fragment BD. Only a FREE axis at D>=256 (e.g. D256->{128,256}, D512->{128,256,512}); at D=64/128 the validator forces BD==head_dim. Changes MSL + cooperative-tensor register layout (cache-keyed)."
+          },
+          {
+            "knob": "MFA_V6_UNROLL_MODE",
+            "domain": "{full, none, 2, 4}; default full",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:485-494",
+            "sweepable_no_rebuild": true,
+            "notes": "Post-generation source substitution of '#pragma clang loop unroll(full)' -> recompile, no rebuild."
+          },
+          {
+            "knob": "MFA_V6_RELAXED_PRECISION",
+            "domain": "{0,1}; default on (relaxed)",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:467-482",
+            "sweepable_no_rebuild": true,
+            "notes": "Toggles matmul2d_descriptor relaxed_precision flag via source substitution. 0 = full precision."
+          },
+          {
+            "knob": "MFA_V6_FORCE_DYNAMIC_K",
+            "domain": "{0,1}; default 0",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:432-462",
+            "sweepable_no_rebuild": true,
+            "notes": "Forces dynamic_length_v<int> for K even when K%32==0 (paradox/robustness test). Source substitution."
+          },
+          {
+            "knob": "MFA_V6_NAX_SINGLE_OTILE",
+            "domain": "{0,1}; auto-derived (Hq==Hk or Hq%Hk==0)",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:306 (auto), :314 (env), :337/:412 (gate)",
+            "sweepable_no_rebuild": true,
+            "notes": "Single O-tile mode; forces bypass_tgp on (:318). use_v6nax requires single_otile (:337) else falls to SDPA."
+          },
+          {
+            "knob": "MFA_V6_BYPASS_TGP",
+            "domain": "{0,1}; default 0 (but single_otile forces 1)",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:311-312, :318",
+            "sweepable_no_rebuild": true,
+            "notes": "Path A cooperative->cooperative (skip threadgroup P_buf). Largely subsumed by single_otile in production."
+          },
+          {
+            "knob": "MFA_V6_MAX_THREADS",
+            "domain": "positive int (pipeline maxTotalThreadsPerThreadgroup cap)",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:950, :1309; hash bits :190",
+            "sweepable_no_rebuild": true,
+            "notes": "Changes pipeline state (cache-keyed). Occupancy lever."
+          },
+          {
+            "knob": "MFA_V6_USE_NAX",
+            "domain": "{0,1}; source-gen-only default = (head_dim==128)",
+            "source_site": "csrc/mfa_v6_nax_primitive.cpp:327-329",
+            "sweepable_no_rebuild": true,
+            "notes": "Post-F-3 effectively INERT: NAX is the only V6 forward; simdgroup fallback REMOVED (:963-986). Alias kept as no-op."
+          },
+          {
+            "knob": "MFA_V6_DENSE_MIN_N",
+            "domain": "int, default 2048; 0 forces NAX at all N",
+            "source_site": "mlx_mfa/attention.py:52 (_V6_DENSE_MIN_N_DEFAULT=2048), :521 (read), :537 (nax_dense gate)",
+            "sweepable_no_rebuild": true,
+            "notes": "LIVE Python routing threshold (no recompile at all). Dense D=128 f16/bf16 self-attn N>=this -> nax_dense; below -> sdpa. D=64/256/512 dense default -> sdpa."
+          },
+          {
+            "knob": "MFA_DISABLE_V6_DENSE",
+            "domain": "{0,1}; default 0",
+            "source_site": "docs/reference/ROUTING.md:29; mlx_mfa/_knobs.py:62; ENV_VARS.md:32",
+            "sweepable_no_rebuild": true,
+            "notes": "Opt-out: dense D128 -> sdpa. Live routing gate."
+          },
+          {
+            "knob": "MFA_NAX_SPARSE_DENSITY_CEILING",
+            "domain": "float, default 0.30; can only TIGHTEN (cannot add unmeasured cells)",
+            "source_site": "mlx_mfa/attention.py:134; ENV_VARS.md:40",
+            "sweepable_no_rebuild": true,
+            "notes": "Live sparse-route restrictor over the _nax_sparse_route_viable region."
+          },
+          {
+            "knob": "MFA_LCSA_KERNEL_VERSION",
+            "domain": "{v1=scalar_fallback, v2=v6nax_sparse}",
+            "source_site": "mlx_mfa/lcsa_nax.py:54-65, :119 (read); ENV_VARS.md:74",
+            "sweepable_no_rebuild": true,
+            "notes": "Sparse expert kernel selector. which-binary = byteDelta vs scalar_fallback."
+          },
+          {
+            "knob": "MFA_DISABLE_V6_BACKWARD / MFA_ENABLE_V6_BACKWARD",
+            "domain": "{0,1} each; D64 default-ON, D128 opt-in",
+            "source_site": "mlx_mfa/dispatch_policy.py:416 (_v6nax_backward_carveout), :494-500 (D64 default-on body), :501-507 (D64/D128 opt-in)",
+            "sweepable_no_rebuild": true,
+            "notes": "Backward NAX split kernel. D64 qL>=2048 f16/bf16 default-on (2.5x); D128 opt-in only (measured 0.46-0.58x, coverage not perf). Docstring MFA_ENABLE line is stale for D64 (:91 ROUTING note)."
+          },
+          {
+            "knob": "MFA_ENABLE_VARLEN_NAX",
+            "domain": "{0,1}; default 0 (opt-in)",
+            "source_site": "mlx_mfa/attention.py:6650 (_varlen_v6nax_eligible), :6659 (env), :6665 (D=128 only), :6902 (v6_nax_varlen_forward)",
+            "sweepable_no_rebuild": true,
+            "notes": "Packed-varlen NAX, D=128 only, tile BQ32/BK32/WM2, extremely narrow shape gate (B=1, 20/24 segs, total len 35018-35250 per ENV_VARS.md:49-52)."
+          },
+          {
+            "knob": "MFA_FORCE_D256_PATH / MFA_FORCE_D512_PATH",
+            "domain": "{0,1} or unset",
+            "source_site": "mlx_mfa/dispatch_policy.py:305-317 (_forced_d256), :320-332 (_forced_d512); mlx_mfa/attention.py:1101-1102; ENV_VARS.md:69",
+            "sweepable_no_rebuild": true,
+            "notes": "Expert force overrides for the D256/D512 FRONTIER. Reaches NAX primitive w/ BD=128 subtile (:352). Public auto D256/D512 default = sdpa (999_999)."
+          },
+          {
+            "knob": "MATMUL2D_EXEC_SG (execution_simdgroups<N>)",
+            "domain": "CODEGEN-FIXED at N=1; N>1 fails MPP static_assert",
+            "source_site": "csrc/mfa/v6_nax/NAAttentionKernel.cpp:1267/:1291 (execution_simdgroups<1>); csrc/mfa_v6_nax_primitive.cpp:497-501 (knob REMOVED, uncompilable)",
+            "sweepable_no_rebuild": false,
+            "notes": "CODEGEN axis. The M5-doctrine 'cooperative 2x2 within a matmul2d' is NOT reachable — current MetalPerformancePrimitives headers require single-SG scope for the map_index/operand-layout patterns. Multi-SG parallelism is expressed only via WM (threadgroup simdgroups), which IS a knob."
+          },
+          {
+            "knob": "MORTON_WALK swizzle (morton_decode_rectangular_2d)",
+            "domain": "CODEGEN structure; row_group_bits/head_bits computed at runtime from grid + BLOCK_DIMENSIONS_PARALLELIZATION + EXECUTION_SIMD_GROUPS",
+            "source_site": "csrc/mfa/v6_nax/NAAttentionKernel.cpp:307-314 (morton), :325-340 (linear variant), :477-509 (decode helpers)",
+            "sweepable_no_rebuild": false,
+            "notes": "CODEGEN axis (no env knob for dense NAX; a linear-walk alt variant exists in source). GNA has a separate MFA_GNA_NAX_SWIZZLE_LOG knob but dense NAX Morton is fixed. M5-doctrine Morton walk is already the default codegen path."
+          },
+          {
+            "knob": "QK/PV matmul2d descriptor shape (paired 16x32x16 MMA)",
+            "domain": "CODEGEN template placeholders {{BLOCK_DIMENSIONS_PARALLELIZATION/TRAVERSAL/HEAD}}",
+            "source_site": "csrc/mfa/v6_nax/NAAttentionKernel.cpp:1266-1291, :1783 (pv remainder)",
+            "sweepable_no_rebuild": false,
+            "notes": "CODEGEN axis: descriptor R/C/K shape is filled from the tile knobs (BQ/BK/BD) but the paired-16x32x16 QK structure and PV reorder are hardcoded template logic (need source variant to change MMA shape family)."
+          },
+          {
+            "knob": "int8 Q/K Sage-NAX kernel",
+            "domain": "DOES NOT EXIST in dispatch; build-probe microbench only",
+            "source_site": "csrc/mpp_int8_bench.mm (MFA_BUILD_PROBES CMake, ENV_VARS.md:162-166); production Sage = simdgroup STEEL in csrc/mfa_sage_fwd.cpp:94-104 (#define MFA_BQ/BK/WM, NOT matmul2d)",
+            "sweepable_no_rebuild": false,
+            "notes": "FRONTIER: no NAX int8 attention kernel exists. §AA.5 kill-gate PASSED (int8/i32 233 TOPS vs f16 124 TFLOPS = 1.88x; compile matrix 16x32x16 / 32x32x32 / 64x64x32 / 64x64x128 all OK, mpp_int8_bench.mm:23-37). Current backend='sage' (attention.py:1020) routes to the STEEL simdgroup Sage kernel; sage decode auto-route is extremely narrow (dispatch_policy.py:845-895: D128, window, GQA=2, cache_len=4096). Needs a new kernel + rebuild."
+          }
+        ],
+        "coarse_grid_cells": 480,
+        "grid_description": "Primary coarse grid = V6-NAX DENSE FORWARD tile autotune, the operative env-sweepable-no-rebuild envelope: valid(BQ,WM) pairs {(32,2),(64,2),(64,4),(128,4),(128,8)} = 5 (constraint BQ%(WM*16)==0, primitive.cpp:368) x BK{32,64,128} = 3 (BK%32==0, :384) x dtype{fp16,bf16} = 2 x D{64,128,256*,512*} = 4 (*256/512 force-path only) x N{2048,4096,8192,16384} = 4  ==>  5*3*2*4*4 = 480 cells. Secondary source-mutation knobs form an OUTER product not usually crossed: UNROLL{full,none,2,4} x RELAXED{0,1} x FORCE_DYNAMIC_K{0,1} = 16x, so a full cross is ~7,680; MFA_V6_MAX_THREADS and D_SUBTILE(D>=256 only, {128,256,512}) add further sparse dimensions. Every tile-knob change is a JIT Metal recompile keyed on the source string (no pip rebuild). SEPARATE sub-family grids (not in the 480): sparse (tile STRUCTURALLY PINNED BQ=BK=32/WM=2, lcsa_nax.py:346 — sweep is over density{<=0.05..0.30} x B.H{1,4,12} x D{64,128} x N{4096,6144,8192} x {causal,nc} x {f16,bf16}, ~region-gated not tile-tunable); backward D64 (split kernel, own MFA_V6BWD_* BQ/BK/WM knobs, ENV_VARS.md:118-124); decode-edge (mfa_primitive, not tile-swept — finite envelope qL{8,16} x GQA-set x kL-floor); varlen D128 (pinned BQ32/BK32/WM2); GNA (own MFA_GNA_NAX_BQ/BK/WM). Autoresearch that changes matmul2d exec-SG scope, Morton swizzle, MMA shape family, or adds an int8 NAX kernel is CODEGEN (source variant + rebuild), NOT in any env grid.",
+        "dispatch_reads": [
+          "Dense forward: mlx_mfa/attention.py:52 (_V6_DENSE_MIN_N_DEFAULT=2048), :521 (reads MFA_V6_DENSE_MIN_N), :537 (return nax_dense for auto D128 N>=v6_min_n). D=64/256/512 & fp32 & feature-combos -> sdpa.",
+          "Sparse gate: mlx_mfa/lcsa_nax.py:350-402 (_nax_sparse_route_viable), constants :333-347. block_tile in {32}, dtype f16/bf16, D in {64,128}, qL==kL<=8192; region-exact B.H/density/causal ceilings.",
+          "Decode edge: mlx_mfa/dispatch_policy.py:167-174 (_M5_NAX_DECODE_EDGE_* : head_dim 64, max_kv 65536, envelopes qL8->GQA{8}/kL>=4096, qL16->GQA{4,8,16}/kL>=16384), :214-246 (_m5_nax_decode_edge_carveout, non-causal only). Terminal mfa_primitive (STEEL decode), not the dense NAX matmul2d.",
+          "Backward: mlx_mfa/dispatch_policy.py:416 (_v6nax_backward_carveout), :494-500 (D64 qL>=2048 f16/bf16 DEFAULT-ON unless MFA_DISABLE_V6_BACKWARD), :501-507 (D64-nc/D128 opt-in via MFA_ENABLE_V6_BACKWARD). D128 measured slower.",
+          "Varlen: mlx_mfa/attention.py:6650/:6659 (MFA_ENABLE_VARLEN_NAX opt-in), :6665 (D==128 only), :6902 (v6_nax_varlen_forward).",
+          "GNA: mlx_mfa/attention.py:167-168 (_GNA_NAX_D128_MIN_N=2048, _GNA_NAX_D64_MIN_N=4096) -> gna_v6nax; below -> gna_steel.",
+          "D256/D512 frontier: mlx_mfa/dispatch_policy.py:144-161 (_M5_NAX_THRESHOLDS: D256 & D512 both 999_999 -> sdpa on M5), :249-286 (_d256_min_n: has_nax->999_999; M1/M2 f16->2048, M1/M2 bf16->999_999; M4 non-nax->2048), :289-302 (_d512_min_n->999_999 always), :305-332 (MFA_FORCE_D256/512_PATH expert overrides).",
+          "Sage/int8 frontier: mlx_mfa/dispatch_policy.py:845-895 (should_use_sage_decode, narrow), mlx_mfa/attention.py:1020-1022 (backend='sage' -> sage_attention int8 Q/K, STEEL kernel). No NAX int8 route.",
+          "Kernel-side tile dispatch: csrc/mfa_v6_nax_primitive.cpp:341-398 (v6nax_BQ/BK/WM/BD defaults + env overrides + Rule-8 validation), :400-413 (blockDims + descriptor)."
+        ],
+        "prod_shapes": [
+          "Dense D=128 N=4096 f16 self-attn -> nax_dense, measured 1.067x/1.071x (reval_A_dense_public); default envelope D128 f16/bf16 N>=2048",
+          "Sparse non-causal N=8192 B.H=12 D=128 -> v6nax_sparse, up to 8.23x (sliding-window/low-density); N=8192 D=64 up to 4.58x; B.H=4 D=128 up to 4.15x",
+          "Sparse causal D=128 N=8192 B.H=12 d<=0.30 -> 3.83x/3.86x",
+          "Decode qL=8 D=64 GQA=8 non-causal 4096<=kL<=65536 -> mfa_primitive, 1.25x@4096 rising to 1.62x@32768; qL=16 D=64 GQA{4,8,16} kL>=16384",
+          "Backward D=64 qL>=2048 f16/bf16 (causal & nc) -> V6NAX split bwd, 2.50x/2.77x vs SDPA-vjp",
+          "Varlen packed D=128 (opt-in MFA_ENABLE_VARLEN_NAX) -> varlen_v6nax, median 1.329x/1.344x over 16 geometries",
+          "GNA 3D D=128 N=4096 f16 (1x7x7) -> gna_v6nax, 2.39x/2.44x; D=64 N>=4096",
+          "FRONTIER (currently SDPA on M5, force-only NAX): dense D=256, D=512; int8 Q/K attention; bf16 at D=256"
+        ],
+        "open_questions": [
+          "D=256 NAX (FRONTIER): public auto routes to SDPA on M5 (_M5_NAX_THRESHOLDS D256->999_999, dispatch_policy.py:157; _d256_min_n has_nax->999_999, :274-276). NAX D256 reachable ONLY via MFA_FORCE_D256_PATH + primitive BD=128 subtile (:352). The 'M1/M2 f16 promote@N>=2048, bf16 keep-SDPA' verdict (:268-269,282-285) is an M1/M2 D-split property and the M4-era promote INVERTS on M5 (:262-265). NAX matmul2d D256 (2x BD=128 replays) is UNMEASURED on M5 — OPEN, re-test, stamp MLX/hardware (perf claims perishable).",
+          "D=512 NAX (FRONTIER): _D512_CONSERVATIVE_MIN_N=999_999 permanent SDPA (dispatch_policy.py:83,109,159). The documented 0.80x ceiling + '64 barriers/K-tile = 16 D-split passes x 4 barriers, ~6% intrinsic ALU overhead' root cause (:15-23,79-82) is an M1/M2 STEEL-V2 D-SPLIT property, NOT the NAX matmul2d path. NAX D512 via BD=128 subtile (4 replays) + MFA_FORCE_D512_PATH is UNMEASURED on M5 — treat as OPEN, not settled.",
+          "int8 Q/K Sage-style NAX (FRONTIER): NO production NAX int8 kernel exists. §AA.5 kill-gate PASSED (mpp_int8_bench.mm:37 int8/i32 233 TOPS vs f16 124 TFLOPS = 1.88x; compile matrix 16x32x16/32x32x32/64x64x32/64x64x128 all OK). Production 'sage' backend is a simdgroup STEEL kernel (mfa_sage_fwd.cpp), not NAX, and its auto-route is extremely narrow (dispatch_policy.py:845-895). OPEN: build an int8 NAX attention kernel (needs source + rebuild); probe gives the candidate tile shapes.",
+          "bf16-all-routing (FRONTIER): bf16 is first-class in NAX dense (primitive.cpp:259-261) and backward/decode (dispatch_policy.py:497,504,243), but the sparse bf16 region is NARROWER than fp16 (only D128/B.H12 nc N4096 + one causal cell, lcsa_nax.py:372-388) and D256 M1/M2 bf16->SDPA (:284). Held branch 'audit/bf16-routing-all-nax' (MEMORY). OPEN: does bf16 merit the same full envelope as fp16 across sparse/D256, or keep the tighter gates?",
+          "M5 doctrine BK=128 vs autotune BK=32: the doctrine names BK=128 as the M5 starting point, but the on-repo NAX-autotune (research/nax-autotune-m5, M5 Max, primitive.cpp:342-346) found BK=32 robustly fastest for D=64 and it is the D=128 default. DIRECT CONTRADICTION — BK=128 is env-valid (128%32==0) and cheap to re-sweep; OPEN, needs a stamped re-measure (MLX 0.31.2, M5) to reconcile.",
+          "M5 doctrine '2x2 simdgroups': ambiguous mapping. The matmul2d execution_simdgroups is CODEGEN-FIXED at <1> (N>1 fails MPP static_assert, primitive.cpp:497-501) so a cooperative 2x2 WITHIN a matmul2d is currently uncompilable. The threadgroup-level 2x2 (WM=4) is ALREADY the D128 default (primitive.cpp:348). Flag: doctrine 'starting point' is either already-shipped (WM=4) or blocked by headers (exec-SG) — not an open sweep dimension without an MPP-header path.",
+          "Sparse tile pinned: SPARSE_NAX_KERNEL_BLOCK_TILE=32 is STRUCTURALLY PINNED (lcsa_nax.py:346), BT64 maps to 2x2 BT32 (:347). Sparse BQ=BK=32/WM=2 is a codegen fixture, not a knob (MEMORY: BT=16 catastrophic, BT=32 optimal). OPEN whether a large-N BT-variant sparse kernel (codegen + rebuild) would help; deferred per op_F_sparse.",
+          "Decode-edge is not tile-tunable: qL8/16 envelopes route to the STEEL mfa_primitive decode (dispatch_policy.py:169-173), a finite measured envelope with no NAX matmul2d tile axis — the beta-3 macOS-27 bounds (kL floors) must be re-validated on stable macOS before broadening (:163-166)."
+        ]
+      }
+    ],
+    "codegen": {
+      "axes": [
+        {
+          "axis": "Simdgroup layout topology (WM x 1 Q-row partition vs 2x2 / 2D cooperative)",
+          "current_default": "WM simdgroups each own a contiguous BQ/WM band of query rows (1-D partition along the parallelization/Q dim). TQ = BQ/(WM*16) with kU=16; each SG's row base tm = 16*TQ*simd_group_id; every SG runs an INDEPENDENT per-simdgroup NAXFrag MMA (no cross-SG cooperation). WM=4 for D=128, WM=2 for D=64.",
+          "source_location": "csrc/mfa/v6_nax/NAAttentionKernel.cpp:2807 (WM=executionSIMDGroups), :2808-2809 (kU=16, TQ=BQ/(WM*16)), :2886 (WM*32 threads), :2915 (tm=16*TQ*simd_group_id), :3008-3015 (per-SG NAXFrag mma)",
+          "rebuild_cost": "CODEGEN_REBUILD (edit NAAttentionKernel.cpp + `pip install --no-build-isolation -e .`, ~minutes, then JIT shader recompile). Cooperative multi-SG variant is effectively BLOCKED: execution_simdgroups<N> for N>1 fails current MPP-header static_asserts in this matmul pattern (mfa_v6_nax_primitive.cpp:496-504).",
+          "parameterizable_now": false,
+          "alternatives": "M5 doctrine's '2x2 simdgroups' = a 2-D layout partitioning K/D as well as Q; a cooperative-tensor variant using matmul2d<execution_simdgroups<WM>> EXISTS in-tree but is RETIRED/probe-only (mfa_steel_fwd_v6_nax.cpp:87,94; shader_cache.hpp:83 KernelType SteelForwardV6NAX=22 'reachable ONLY via MFA_BUILD_PROBES'). NOTE: the WM COUNT is env-sweepable (MFA_V6_NAX_WM, primitive:356) but only scales the 1-D partition; the topology itself is codegen-fixed. OPEN QUESTION: current default is 4x1/2x1 row-partition, NOT the doctrine's 2x2 — the 2x2 hypothesis is unbuilt and header-gated."
+        },
+        {
+          "axis": "Grid walk order (linear/natural 3D vs Morton/Z-order swizzle)",
+          "current_default": "Linear natural 3D grid (NQ, H, B): tid.x=Q-tile, tid.y=head, tid.z=batch, NO swizzle. Applies to the production NAX dense forward AND all NAX backward kernels.",
+          "source_location": "csrc/mfa/v6_nax/NAAttentionKernel.cpp:2896-2904 (forward reads bare threadgroup_position_in_grid, no decode); backward methods (createV6NAXBackward*Source, 3994+) also use bare uint3 tid. Morton machinery (compact_morton_even_bits / morton_decode_rectangular_2d) lives at :477-528 and is emitted ONLY by the legacy masked/non-NAX createSource forward branch at :306-314.",
+          "rebuild_cost": "CODEGEN_REBUILD (must emit the decode inside createV6NAXSource AND change the host dispatch grid to 1-D in the v6_nax_forward encoder).",
+          "parameterizable_now": false,
+          "alternatives": "Morton/Z-order rectangular tile swizzle (the documented M5 starting point) — helpers are already in-tree but UNWIRED to the hot NAX path. OPEN QUESTION: M5 doctrine calls Morton the starting point, yet the production NAX forward is LINEAR and the Morton path is only reachable via the legacy masked/backward-legacy branch; Morton's benefit on the NAX forward is unmeasured on this codebase. No ENV knob exists (verified absent from _knobs.py / ENV_VARS.md)."
+        },
+        {
+          "axis": "K/V tile buffering (single-buffered vs double/multi-buffered prefetch)",
+          "current_default": "Single-buffered. Each K-loop iteration loads Q/K fragments (QK matmul) and V fragments (PV matmul) synchronously from device memory into registers/cooperative tensors; no threadgroup staging buffer, no prefetch of the next tile. K-loop step = BK.",
+          "source_location": "csrc/mfa/v6_nax/NAAttentionKernel.cpp:2972-3143 (K-loop body), :3005 (Ktile.load), :3127 (Vtile.load), :3141-3142 (K/V pointer advance by BK). Design intent confirmed by sibling-path comments 'Single cS (no double-buffer)' at :1889, :2463, :2525.",
+          "rebuild_cost": "CODEGEN_REBUILD.",
+          "parameterizable_now": false,
+          "alternatives": "Software-pipeline double-buffer (load next K/V tile while computing current), or async/threadgroup staged loads. Not implemented for the NAX path. No ENV knob."
+        },
+        {
+          "axis": "Barrier placement / count / memory flags",
+          "current_default": "Three barriers in the compute region, all mem_none (execution-ordering, not memory): (1) simdgroup_barrier post-softmax / pre-PV; (2) threadgroup_barrier ONLY when V6NAX_BD==128 at PV id==4 (register-spill relief, compile-time-D-gated); (3) threadgroup_barrier pre-normalize after the K-loop. No barriers inside the QK matmul or between K-tiles.",
+          "source_location": "csrc/mfa/v6_nax/NAAttentionKernel.cpp:3107 (simdgroup_barrier mem_none), :3114-3118 (if V6NAX_BD==128 && id==4: threadgroup_barrier mem_none), :3146 (threadgroup_barrier mem_none pre-normalize)",
+          "rebuild_cost": "CODEGEN_REBUILD.",
+          "parameterizable_now": false,
+          "alternatives": "Different split points, mem_threadgroup vs mem_none flags, add/remove the D=128 mid-PV barrier, or per-D barrier schedules. The id==4 mid-PV barrier is a D=128 register-pressure mitigation and a prime tuning candidate. No ENV knob."
+        },
+        {
+          "axis": "Register tiling: MMA fragment grouping + unroll structure",
+          "current_default": "kU=16 fixed MMA K-step. 16x16 MMA fragment held per-lane as kElemRows=2 x kElemCols=4 (kElemRowsJump=8). QK emitted as PAIRED 16x32x16 MMA (loop ik += 2). PV emitted paired (id += 2). Accumulators: Stile=NAXTile<float,TQ,TK>, Otile=NAXTile<float,TQ,TD>. Unroll = clang loop unroll(full) via STEEL_PRAGMA_UNROLL.",
+          "source_location": "csrc/mfa/v6_nax/NAAttentionKernel.cpp:2808 (kU=16), :2792-2794 (BaseNAXFrag kElemRows=2/kElemCols=4/kElemRowsJump=8), :2983 (QK ik+=2 paired), :3113 (PV id+=2 paired), :2956/:2975 (Otile/Stile shapes), :720 (STEEL_PRAGMA_UNROLL definition)",
+          "rebuild_cost": "CODEGEN_REBUILD for the pairing/fragment structure; SOURCE_KNOB_JIT for unroll degree (env mutates the emitted pragma string, JIT-only, no .so rebuild).",
+          "parameterizable_now": false,
+          "alternatives": "Unpaired or quad MMA grouping; different accumulator fragment widths. Loop-unroll DEGREE is separately env-sweepable via MFA_V6_UNROLL_MODE (full/none/2/4) which replace_all-mutates the pragma (mlx_mfa/_knobs.py:156; primitive:485-493) — that sub-axis is parameterizable_now. The 16x16 hardware frag geometry is Apple-fixed and not realistically tunable."
+        },
+        {
+          "axis": "D-subtile strategy: QK-replay vs S-staging (D>=256 only)",
+          "current_default": "SUBTILES = FULL_BD / BD. For D=64/128, BD is pinned to the full head so SUBTILES==1 (no replay). For D>=256, the kernel REPLAYS the full QK contraction once per independent V/O head sub-slice (out_subtile loop), trading duplicated score work for bounded O register state.",
+          "source_location": "csrc/mfa/v6_nax/NAAttentionKernel.cpp:2804-2806 (BD, FULL_BD, SUBTILES), :2955 (out_subtile replay loop), :2990 (qk_subtile inner replay), :2950-2953 (explicit comment: 'later tuning can replace replay with an S staging strategy')",
+          "rebuild_cost": "CODEGEN_REBUILD to change the replay strategy itself; the BD sub-tile WIDTH is a TILE_KNOB_JIT (MFA_V6_NAX_D_SUBTILE) but valid only for D>=256 (primitive:390-397 forces BD==head for D<256).",
+          "parameterizable_now": false,
+          "alternatives": "S-staging (stage the QK scores once, reuse across V/O sub-slices) instead of QK replay — explicitly flagged in-source as the next lever but unbuilt. Distinct from the barrier/tiling axes because it changes the outer computation shape, not just the inner MMA."
+        },
+        {
+          "axis": "[BOUNDARY / knob-driven] Tile triple BQ/BK/BD + simdgroup count WM",
+          "current_default": "D=64: BQ=32, BK=32, BD=64(full), WM=2. D=128: BQ=64, BK=32, BD=128(full), WM=4. D>=256: BD=128. (BK=32-for-all-D is autotuned per research/nax-autotune-m5; old D=64 BK=64 was retired.)",
+          "source_location": "csrc/mfa_v6_nax_primitive.cpp:341 (BQ), :347 (BK=32), :348 (WM), :352 (BD), env overrides :354-363; validity gates :368-397",
+          "rebuild_cost": "TILE_KNOB_JIT: env var changes the descriptor hash -> a new JIT pipeline compiles on first dispatch; NO .so rebuild.",
+          "parameterizable_now": true,
+          "alternatives": "Env-sweepable NOW via MFA_V6_NAX_BQ / MFA_V6_NAX_BK / MFA_V6_NAX_WM / MFA_V6_NAX_D_SUBTILE (mlx_mfa/_knobs.py:150-153,184). Constraints enforced loudly: BQ%(WM*16)==0, head_dim%16==0, BK a positive multiple of 32 (paired MMA needs TK even), D<256 requires BD==head. Included here as the codegen/knob boundary — these are NOT codegen axes. NOTE MFA_V6_EXEC_SG is a documented NO-OP for the NAX path (primitive:905-920)."
+        },
+        {
+          "axis": "[BOUNDARY / source-knob] Loop unroll mode + BHND layout",
+          "current_default": "Unroll = full (clang loop unroll(full)); layout = BHND when MFA_V6_BHND enabled (host-side transpose otherwise).",
+          "source_location": "csrc/mfa_v6_nax_primitive.cpp:485-493 (MFA_V6_UNROLL_MODE full/none/2/4), :506+ (MFA_V6_BHND source rewrite); mlx_mfa/_knobs.py:156 (MFA_V6_UNROLL_MODE)",
+          "rebuild_cost": "SOURCE_KNOB_JIT: env var replace_all-mutates the emitted MSL string -> JIT shader recompile only, NO .so rebuild.",
+          "parameterizable_now": true,
+          "alternatives": "Hybrid class: these mutate the generated source (codegen-level effect) but are ENV-driven, so they sweep without a C++ rebuild. Listed to make the 'source-string mutation vs source-generator variant' distinction explicit."
+        }
+      ],
+      "summary": "CODEGEN-AXIS CENSUS of the production V6-NAX forward generator, createV6NAXSource (csrc/mfa/v6_nax/NAAttentionKernel.cpp:2798-3257). WHICH-BINARY confirmed by source: this generator (NAXFrag per-simdgroup MMA, WM x 1 Q-row partition) is the F-3 production dense forward; the cooperative execution_simdgroups<WM> variant in generate_steel_v6_nax_source (mfa_steel_fwd_v6_nax.cpp) is RETIRED/probe-only (shader_cache.hpp:83, KernelType 22). All citations read at source; no whole-file reads.\\n\\nSIX true CODEGEN axes (need a source-generator variant + C++ rebuild, NOT env-sweepable; verified absent from _knobs.py and ENV_VARS.md): (1) simdgroup layout topology — current 4x1/2x1 row-partition; the M5-doctrine 2x2 is unbuilt and header-gated (MPP static_asserts reject execution_simdgroups<N>, N>1; the removed MFA_V6_MATMUL_EXEC_SG knob, primitive:496-504). (2) grid walk order — production forward AND all backward kernels are LINEAR (2896-2904); Morton helpers exist (477-528) but are wired ONLY to the legacy masked path (306-314), NOT the hot NAX path. (3) K/V buffering — single-buffered, no prefetch (2972-3143). (4) barrier placement — 3 mem_none barriers, incl. a D=128-only mid-PV barrier at id==4 (3107/3114-3118/3146). (5) register tiling / paired-MMA structure (2983 ik+=2, 3113 id+=2, kU=16, 16x16 frag). (6) D-subtile QK-replay vs S-staging for D>=256, source-flagged as the next lever (2950-2955).\\n\\nBOUNDARY (parameterizable_now=true, no .so rebuild): tile triple BQ/BK/WM/BD via MFA_V6_NAX_* (descriptor-hash JIT recompile) and source-knobs MFA_V6_UNROLL_MODE / MFA_V6_BHND (string-mutation JIT recompile).\\n\\nM5-DOCTRINE OPEN QUESTIONS flagged, not settled: the doctrine's 2x2-simdgroups and Morton-walk starting points are BOTH absent from the current production NAX kernel (4x1 layout, linear walk); the 2x2 path is header-blocked and Morton is unwired/unmeasured on the NAX path. M1/M2 optima (BK=8@D256 etc.) were not re-tested here. Phase 0 MAP ONLY — no source modified (read-only).\""
+    },
+    "total_coarse_cells": 1828,
+    "synthesis": "# V6-NAX Autoresearch Search-Space Map (Phase-0 synthesis)\n\nSynthesized from the five per-family census blocks + the codegen-axis census. Read-only: no source modified, no independent re-verification of the census citations (they are carried through as-given; per RULE 16 the \"vestigial/pinned/blocked\" labels below are the census's hypotheses, and **every ratio is β3-indicative** — macOS 27 beta / Metal 32023.918 / M5 Max / MLX 0.31.2 / 2026-07-13 — pending re-stamp on stable macOS).\n\nKey de-duplication fact used throughout: **Families 1, 4-shared, and 5-primary are the SAME generator** (`createV6NAXSource`, `csrc/mfa/v6_nax/NAAttentionKernel.cpp:2798-3257`). Their headline cell counts double-count the shared dense NAX forward tile and must not be summed naively.\n\n---\n\n## (1) Prioritized ordering — payoff-vs-cost for a coarse night screen\n\nThe decisive cost axis is **knob-driven (env → JIT recompile, no `.so` rebuild)** vs **codegen (source variant + `pip install -e` rebuild)**. A night screen wants knob-driven only.\n\n| Rank | Family / axis | Why (payoff) | Cost | Cells (coarse) | Source |\n|---|---|---|---|---|---|\n| **1** | **Dense fwd tile autotune D=64+D128** (BQ/BK/WM) | Shipped D128 route is only **1.067–1.071×** (barely parity) → biggest headroom; resolves the **BK=32-vs-128 contradiction** flagged in F1/F4/F5; hits the production route directly (env reaches routed kernel, `mfa_v6_nax_primitive.cpp:354-356`) | Knob JIT, no rebuild | **108** doctrine-safe (54 prod D128-only) | F1 `primitive.cpp:341/347/348/368/384` |\n| **2** | **Backward D64 split tile autotune** (dQ/dV/dK BQ/BK/WM) | Default-ON, already **2.50–2.77×**; rich independent knob grid; untested BK=128 + joint-WM (dQ=2 vs dV/dK=4) | Knob JIT | **~510** | F3 `primitive.cpp:1715-1723/2082-2090/2456-2464` |\n| **3** | **Sparse BT32 census** (overflow) | Already **2.5–8.23×** (biggest wins) but **tile is PINNED** → payoff is census-completeness/durability, not new tile optima; cheap env sweep | Env routing/shape only (no tile DOF) | **288** routing cells (~40-60 route; ~1150 w/ mask-structure) | F2 `lcsa_nax.py:333-402`, `mfa_sparse_attention.cpp:40-42` |\n| **4** | **GNA native tile autotune** | Own knobs incl. L2 swizzle + precompute; **2.39–2.44×**; but narrower prod relevance, adds 2 extra dims | Knob JIT | **144** | F4 `mfa_gna_nax.cpp:576-586` |\n| **5** | **Secondary source-knobs** (UNROLL/RELAXED/FORCE_DYNAMIC_K/MAX_THREADS) | Real perf levers but **×8–16 multiplier** | Knob JIT, but explodes grid | ×16 outer product | F5 `primitive.cpp:467-494`, `:950` |\n| **6** | **Varlen tile** | Public route **PINS 32/32/2** → needs `_ext`/Python-const, not env | Semi-codegen (re-import) | **54** | F4 `attention.py:6641-6643` |\n| **7** | **Decode qL=8/16** | Real surface is SOURCE constants (envelope+`num_splits` cap); no own NAX kernel (STEEL identity) | Mostly source-const, not knob | **240** (shape-char) | F3 `dispatch_policy.py:169-174` |\n| **8** | **D256/D512 frontier (force-path)** | UNMEASURED on M5 NAX matmul2d; env-reachable via `MFA_FORCE_D256/512_PATH` | Knob JIT (force-path) | +192 (2 D × ... in F5's 480) | F5 `dispatch_policy.py:305-332` |\n| **9** | **6 true codegen axes** (Morton, 2×2 topology, double-buffer, barrier sched, MMA grouping, S-staging) | Doctrine elements — but rebuild-gated; **2×2 is header-BLOCKED** (uncompilable) | CODEGEN_REBUILD | n/a | Codegen census axes 1-6 |\n| **10** | **int8 NAX / conv3d tile** | int8 kernel **does not exist**; conv tile is 32³ constexpr | New kernel / C++ variant | 4 (conv, untunable) | F5 `mpp_int8_bench.mm`; F4 `mfa_conv_nax.cpp:34-37` |\n\n**Rationale for #3 over #4:** sparse has the largest measured wins but zero tile DOF (pinned constexpr), so a \"screen\" there cannot find a tile optimum — it only fills routing/measurement gaps. That makes it ideal *overflow* (cheap, fills β3 re-stamp debt) but wrong as a *primary* tile-autotune target. GNA is a genuine tile sweep but off the main production path.\n\n---\n\n## (2) Total coarse-grid cell counts, by mode (de-duplicated)\n\n**MODE A — Knob-driven tile-autotune (night-runnable, no rebuild):**\n\n| Screen | Cells | Note |\n|---|---|---|\n| Dense fwd D64+D128 doctrine-safe (TQ==1: {(32,2),(64,4),(128,8)}×BK{32,64,128}×D{64,128}×dtype{f16,bf16}×N{2048,4096,8192}) | **108** | 54 prod-reachable (D128 public route); D64 via `_ext` (F1) |\n| Backward D64 (dQ~14 + dV~14 + dK~14 = ~42 tiles × 12 shape) | **~510** | (+~1.3× if fused/legacy modes explored) (F3) |\n| GNA (9 (BQ,WM) × BK{32} × PRECOMPUTE{2} × SWIZZLE{4} × D{2}) | **144** | own defaults (F4) |\n| **MODE A subtotal (distinct kernels)** | **~762** | + varlen 54 (semi) |\n\n**Extended dense envelope (F5 framing):** admitting TQ=2 pairs {(64,2),(128,4)}, N=16384, and D256/512 force-path → **480** (5 (BQ,WM) × 3 BK × 2 dtype × 4 D × 4 N). This *supersets* the 108 above (same generator).\n\n**MODE B — Routing/eligibility census (env shape/density, no tile DOF):**\n\n| Screen | Cells |\n|---|---|\n| Sparse (D{64,128}×N{4096,6144,8192}×B·H{1,4,12}×causal{F,T}×dtype{f16,bf16}×density{4}) | **288** (~40-60 route; ~1150 with mask-structure fan-out) |\n| Decode (qL{8,16}×kL×GQA×dtype = 40 shape × 6 ENV levers) | **240** (real surface = source consts) |\n\n**MODE C — Codegen (rebuild-gated, NOT night-runnable):** 6 codegen axes + conv 32³ tile (4 conv shapes, untunable) + varlen/GNA/decode Python-const thresholds (semi) + int8 (nonexistent). 2×2 topology **uncompilable** (`primitive.cpp:496-504`).\n\n**MODE D — Secondary knob multiplier:** UNROLL{4}×RELAXED{2}×FORCE_DYNAMIC_K{2}=**×16**; MAX_THREADS ~×3-4. Full dense cross ≈ **7,680** (F5); attention Family-4 full ≈ **~1,590**. **Hold at default for the coarse pass**; cross only on winning tile cells.\n\n**Coarse night budget (recommended, MODE A defaults-on-secondary):** dense **108** + sparse-overflow **288** = **396 cells** primary; backward **510** as the second-night block.\n\n---\n\n## (3) Knob-driven vs codegen split\n\n**KNOB-DRIVEN (env → JIT recompile, `sweepable_no_rebuild=true`):**\n- **Tile triple:** `MFA_V6_NAX_BQ/_BK/_WM/_D_SUBTILE` (dense/varlen/GNA share `primitive.cpp:341-397`); GNA has own `MFA_GNA_NAX_BQ/BK/WM` (`mfa_gna_nax.cpp:576-582`); backward `MFA_V6BWD_*`, `MFA_V6BWDV/K/F/KV_*` (`primitive.cpp:1715-2670`).\n- **Source-string mutation:** `MFA_V6_UNROLL_MODE`, `MFA_V6_RELAXED_PRECISION`, `MFA_V6_FORCE_DYNAMIC_K`, `MFA_V6_BHND`, `MFA_V6_MAX_THREADS` (`primitive.cpp:432-494/950`); GNA `_PRECOMPUTE_RANGE`, `_SWIZZLE_LOG` (`mfa_gna_nax.cpp:126-127`).\n- **Routing gates (no recompile at all):** `MFA_V6_DENSE_MIN_N`, `MFA_DISABLE_V6_DENSE` (`attention.py:521/535`), `MFA_NAX_SPARSE_DENSITY_CEILING`, `MFA_LCSA_KERNEL_VERSION`, `MFA_DISABLE/ENABLE_V6_BACKWARD`+`MFA_V6_BWD_KERNEL`, `MFA_ENABLE_VARLEN_NAX`, `MFA_DISABLE_GNA_NATIVE`, `MFA_ENABLE_CONV3D_SPATIAL_PAD_SLICE`, `MFA_FORCE_D256/512_PATH`, `MFA_FORCE/DISABLE_V2`+`MFA_V2_BQ64`+`MFA_FORCE_SPLITK`.\n\n**CODEGEN (source variant + `pip install -e`):** simdgroup topology (2×2 **header-blocked**), Morton grid walk (unwired to hot NAX path), K/V double-buffer/prefetch, barrier schedule (incl. D128 mid-PV `id==4` barrier), paired-MMA grouping (kU=16, ik+=2/id+=2), D≥256 QK-replay-vs-S-staging, sparse tile constexpr (32/32/2), conv matmul2d 32³ + spatial TW/TH, decode `num_splits` cap=32, `kU`/TQ==1 static_assert, **int8 NAX kernel (does not exist)**.\n\n**SEMI (Python-constant edit + re-import, no `.so` rebuild, but not env):** varlen tile pin (`attention.py:6641-6643`), GNA `_MIN_N` (`attention.py:167-168`), decode envelopes/kL-floors (`dispatch_policy.py:169-174`), conv3d allowlist (`_auto_hooks.py:306-311`).\n\n**MANDATORY EXCLUSION (RULE 16 #8 — vacuous):** `MFA_V6_BLOCK_R/BLOCK_C/EXEC_SG` are **VESTIGIAL** post-F-3 (feed the removed simdgroup descriptor; `primitive.cpp:281-290/915-921`) → byteΔ=0. The old \"BQ=16 wins / BQ=64 catastrophic 4×\" note describes that dead path and is **false** for the NAX kernel.\n\n---\n\n## (4) Top open questions (frontiers), ranked\n\n1. **BK=32 (autotuned default) vs BK=128 (M5 doctrine) — DIRECT CONTRADICTION** (F1/F4/F5, `primitive.cpp:342-347`). BK=128 is env-valid (128%32==0), cheap. `single_otile`⇒tgmem=0 so BK=128 is **not** threadgroup-blocked; ceiling = cooperative-tensor register pressure (TK=BK/16=8). **Needs measured register/occupancy sweep, not assumed.** ← #1 night question.\n2. **Morton walk unimplemented on the hot NAX forward** (codegen axis 2; F1/F4). Helpers exist (`NAAttentionKernel.cpp:477-528`) but wired only to legacy masked branch (`:306-314`). CODEGEN_REBUILD; benefit unmeasured.\n3. **\"2×2 simdgroups\" is either already-shipped or header-blocked** (F5, codegen axis 1). Threadgroup 2×2 = WM=4 **is already the D128 default**; matmul2d `execution_simdgroups<N>` N>1 is **uncompilable** (MPP static_assert). Not a fresh sweep dimension without an MPP-header path.\n4. **D256/D512 NAX matmul2d UNMEASURED on M5** (F5 frontier, `dispatch_policy.py:157/274-276`). Public auto→SDPA (999_999); reachable via `MFA_FORCE_D256/512_PATH`+BD=128 subtile. M1/M2 D-split roots (0.80× ceiling, BK=8@D256) do **not** apply to the matmul2d path — re-test + stamp.\n5. **int8 Q/K NAX kernel does not exist** (F5). §AA.5 kill-gate PASSED (1.88× compute headroom, compile matrix OK, `mpp_int8_bench.mm`). Prod 'sage' = STEEL simdgroup. New kernel + rebuild.\n6. **Decode has no own NAX kernel** (F3) — qL8/16 → STEEL V2 identity; `gqa_decode_cider` port unwired. `has_nax` gate is a proxy, not proof the NAX binary ran — confirm which-binary by byteΔ, not the flag.\n7. **Sparse: doctrine never tried; WM=1 pin conflates correctness + perf** (F2). Larger-BK/2×2/Morton sparse variant never built; WM=1 rejected as \"3-4× slower AND wrong-but-finite (Category-A)\" — separate the two before treating WM=2 as settled. BT16 never given a native kernel.\n8. **bf16 under-measured, not kernel-limited** (F2/F5). bf16 = T-swap, no kernel change, yet sparse admits only 1 causal + 1 non-causal bf16 region — likely more winning cells.\n9. **`num_splits` cap=32 / ≥2-K-tiles-per-split are M1/M2-era heuristics** (F3), never re-tuned for M5 40-core. C++ constant.\n10. **Backward WM default inconsistency** (F3): dQ unset-default WM=2 vs split dV/dK WM=4, both keyed to `MFA_V6BWD_WM` — clean joint-WM axis, not yet run.\n11. **ALL ratios β3-indicative** (RULE 16 #7): SDPA baseline moves under the ratio with no repo change — re-measure + re-stamp before trusting any number.\n\n---\n\n## (5) Recommended NIGHT-1 focus\n\n**Primary — Dense forward tile autotune, D∈{64,128}, doctrine-safe (108 cells):**\n- Grid: (BQ,WM) ∈ {(32,2),(64,4),(128,8)} (TQ==1 safe, `NAAttentionKernel.cpp:2809`) × BK ∈ {32,64,128} × D ∈ {64,128} × dtype {f16,bf16} × N {2048,4096,8192}.\n- **Hold ALL secondary knobs at default** (UNROLL=full, RELAXED=1, FORCE_DYNAMIC_K=0, MAX_THREADS=default) for the coarse pass — cross only on the winning cells (second pass).\n- **Routing:** D=128 reaches the routed kernel via public API + env (`primitive.cpp:354-356` reads the knobs at codegen, so a sweep *does* steer the shipped route). **D=64 dense is NOT env-routed** (`attention.py:526` hardcodes head_dim==128) → drive via raw `_ext.v6_nax_forward` (research arm, still no rebuild).\n- **#1 target answer:** does BK=128 beat the BK=32 autotuned default on M5? (resolves the cross-family contradiction).\n\n**Overflow — Sparse BT32 census (288, cheap):** NOT a tile sweep (pinned) — spend it filling census/re-stamp debt:\n- (a) **N=6144** has no locked datum (claimed 1.95–2.65×, `ROUTING.md:63-65`) → confirm;\n- (b) **bf16** widen beyond the 2 measured regions (`lcsa_nax.py:372-388`);\n- (c) **re-stamp** the β3-indicative wins on current MLX/macOS.\n- Env: `MFA_LCSA_KERNEL_VERSION=v2` + shape/density sweep.\n\n**Discipline gates for the whole run (RULE 16):**\n- **Engagement per arm** (#8): byteΔ vs SDPA fallback (dense) / vs `scalar_fallback` (sparse) must exceed the same-kernel noise floor; byteΔ≈0 ⇒ vacuous ⇒ discard.\n- **Exclude** `MFA_V6_BLOCK_R/BLOCK_C/EXEC_SG` (byteΔ=0 ghosts).\n- **Oracle-gate any TQ>1 cell** *before* trusting its ratio (Apple static_assert expects TQ=1; the 216-cell relaxed screen and F5's (64,2)/(128,4) pairs are compilability/correctness-**unverified**).\n- **Version-stamp** every cell: `abs-ms + num/den/direction + date + MLX 0.31.2 + M5 Max/macOS 27 beta`.\n\n**Night-2 block:** backward D64 (~510) once the dense BK verdict is in — carry the winning BK/WM forward to the joint-WM (dQ=2 vs dV/dK=4) axis. Codegen axes (Morton, barrier schedule, D≥256 S-staging) are follow-on rebuild experiments gated on the tile-autotune results, not night-1."
+  },
+  "workflowProgress": [
+    {
+      "type": "workflow_phase",
+      "index": 1,
+      "title": "Family census"
+    },
+    {
+      "type": "workflow_phase",
+      "index": 2,
+      "title": "Synthesis"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 1,
+      "label": "census:dense_fwd",
+      "phaseIndex": 1,
+      "phaseTitle": "Family census",
+      "agentId": "a3edec9ac96b3a8e8",
+      "agentType": "general-purpose",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1786304706587,
+      "queuedAt": 1786304704138,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "dense_forward_D64_D128",
+      "promptPreview": "You are censusing the mlx-mfa V6-NAX autoresearch search space by READING SOURCE in /Users/marcomarcelino/code/mlx-mfa-v2. Read-only; do NOT modify any file. Key sources: mlx_mfa/_knobs.py (170 MFA_* knobs), ENV_VARS.md, docs/reference/ROUTING.md (prod shapes + dispatch line-anchors), csrc/mfa/v6_nax/NAAttentionKernel.cpp (createV6NAXSource codegen), csrc/mfa_v6_nax_primitive.cpp, mlx_mfa/dispatch…",
+      "lastProgressAt": 1786305056095,
+      "tokens": 134511,
+      "toolCalls": 19,
+      "durationMs": 349508,
+      "resultPreview": "{\"family\":\"dense_forward_D64_D128\",\"knob_axes\":[{\"knob\":\"MFA_V6_NAX_BQ\",\"domain\":\"parallelization (Q-block rows). Default D64=32, D128=64. Constraint BQ % (WM*16)==0; with kU=16 hardcoded, TQ=BQ/(WM*16) must equal 1 per Apple static_assert, so practically BQ==WM*16. Coarse {32,64,128}.\",\"source_site\":\"csrc/mfa_v6_nax_primitive.cpp:341 (default), :354 (env read), :360 (dispatch override), :368 (BQ%…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 2,
+      "label": "census:sparse_causal",
+      "phaseIndex": 1,
+      "phaseTitle": "Family census",
+      "agentId": "a077f419cfbd95c95",
+      "agentType": "general-purpose",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1786304706296,
+      "queuedAt": 1786304704138,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "V6-NAX sparse — `v6nax_sparse` (BT32 non-causal) + causal-s…",
+      "promptPreview": "You are censusing the mlx-mfa V6-NAX autoresearch search space by READING SOURCE in /Users/marcomarcelino/code/mlx-mfa-v2. Read-only; do NOT modify any file. Key sources: mlx_mfa/_knobs.py (170 MFA_* knobs), ENV_VARS.md, docs/reference/ROUTING.md (prod shapes + dispatch line-anchors), csrc/mfa/v6_nax/NAAttentionKernel.cpp (createV6NAXSource codegen), csrc/mfa_v6_nax_primitive.cpp, mlx_mfa/dispatch…",
+      "lastProgressAt": 1786305000735,
+      "tokens": 131829,
+      "toolCalls": 13,
+      "durationMs": 294439,
+      "resultPreview": "{\"family\":\"V6-NAX sparse — `v6nax_sparse` (BT32 non-causal) + causal-sparse. One JIT kernel (csrc/mfa_sparse_attention.cpp::sparse_kernel_source_v6nax), causal is a codegen-key bool on the same kernel; scalar_fallback is the genuine fallback. NOT the same codegen as the dense NAX kernel (csrc/mfa/v6_nax/NAAttentionKernel.cpp).\",\"knob_axes\":[{\"knob\":\"MFA_LCSA_KERNEL_VERSION\",\"domain\":\"{unset→auto, …"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 3,
+      "label": "census:backward_decode",
+      "phaseIndex": 1,
+      "phaseTitle": "Family census",
+      "agentId": "a48d970ef6bd866f0",
+      "agentType": "general-purpose",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1786304706508,
+      "queuedAt": 1786304704138,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "backward-D64 (v6 split backward) + decode-qL<=8/16 (gqa/vec…",
+      "promptPreview": "You are censusing the mlx-mfa V6-NAX autoresearch search space by READING SOURCE in /Users/marcomarcelino/code/mlx-mfa-v2. Read-only; do NOT modify any file. Key sources: mlx_mfa/_knobs.py (170 MFA_* knobs), ENV_VARS.md, docs/reference/ROUTING.md (prod shapes + dispatch line-anchors), csrc/mfa/v6_nax/NAAttentionKernel.cpp (createV6NAXSource codegen), csrc/mfa_v6_nax_primitive.cpp, mlx_mfa/dispatch…",
+      "lastProgressAt": 1786305138802,
+      "tokens": 161307,
+      "toolCalls": 30,
+      "durationMs": 432294,
+      "resultPreview": "{\"family\":\"backward-D64 (v6 split backward) + decode-qL<=8/16 (gqa/vector/flash-decode). Both are M5/NAX autoresearch targets. Backward-D64 is DEFAULT-ON (opt-out MFA_DISABLE_V6_BACKWARD), routing mx.grad(flash_attention) at D=64,N>=2048,f16/bf16 to a 3-kernel V6NAX split backward (dQ + split-dV partials + split-dK partials, reduced by Python mx.sum over the WM slot dim). Decode-qL<=8/16 is a fini…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 4,
+      "label": "census:varlen_gna_conv3d",
+      "phaseIndex": 1,
+      "phaseTitle": "Family census",
+      "agentId": "ad956d1980fcd4404",
+      "agentType": "general-purpose",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1786304706349,
+      "queuedAt": 1786304704138,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "V6-NAX autoresearch census — three opt-in/native families: …",
+      "promptPreview": "You are censusing the mlx-mfa V6-NAX autoresearch search space by READING SOURCE in /Users/marcomarcelino/code/mlx-mfa-v2. Read-only; do NOT modify any file. Key sources: mlx_mfa/_knobs.py (170 MFA_* knobs), ENV_VARS.md, docs/reference/ROUTING.md (prod shapes + dispatch line-anchors), csrc/mfa/v6_nax/NAAttentionKernel.cpp (createV6NAXSource codegen), csrc/mfa_v6_nax_primitive.cpp, mlx_mfa/dispatch…",
+      "lastProgressAt": 1786305108795,
+      "tokens": 145478,
+      "toolCalls": 22,
+      "durationMs": 402446,
+      "resultPreview": "{\"family\":\"V6-NAX autoresearch census — three opt-in/native families: varlen (packed NAX), GNA (native 3-D window), conv3d spatial-pad. All three ride the same JIT-compiled NAX matmul2d datapath (createV6NAXSource in csrc/mfa/v6_nax/NAAttentionKernel.cpp; conv uses the separate MPP matmul2d in csrc/mfa_conv_nax.cpp), so a param change recompiles the MSL at runtime and re-keys the pipeline cache — …"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 5,
+      "label": "census:frontiers",
+      "phaseIndex": 1,
+      "phaseTitle": "Family census",
+      "agentId": "a0156a3293317c859",
+      "agentType": "general-purpose",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1786304708688,
+      "queuedAt": 1786304704138,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "v6_nax_attention_autoresearch (dense-forward tile autotune …",
+      "promptPreview": "You are censusing the mlx-mfa V6-NAX autoresearch search space by READING SOURCE in /Users/marcomarcelino/code/mlx-mfa-v2. Read-only; do NOT modify any file. Key sources: mlx_mfa/_knobs.py (170 MFA_* knobs), ENV_VARS.md, docs/reference/ROUTING.md (prod shapes + dispatch line-anchors), csrc/mfa/v6_nax/NAAttentionKernel.cpp (createV6NAXSource codegen), csrc/mfa_v6_nax_primitive.cpp, mlx_mfa/dispatch…",
+      "lastProgressAt": 1786305121565,
+      "tokens": 147832,
+      "toolCalls": 24,
+      "durationMs": 412877,
+      "resultPreview": "{\"family\":\"v6_nax_attention_autoresearch (dense-forward tile autotune is the primary env-sweepable envelope; sub-families: sparse, backward, decode-edge, varlen, GNA — all NAX matmul2d/cooperative-tensor, M5 Max / macOS 27 beta / MLX 0.31.2)\",\"knob_axes\":[{\"knob\":\"MFA_V6_NAX_BQ\",\"domain\":\"positive int, must satisfy BQ%(WM*16)==0; defaults D64=32, D128=64\",\"source_site\":\"csrc/mfa_v6_nax_primitive.c…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 6,
+      "label": "census:codegen",
+      "phaseIndex": 1,
+      "phaseTitle": "Family census",
+      "agentId": "ae660976616acad8d",
+      "agentType": "general-purpose",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1786305142309,
+      "queuedAt": 1786305140438,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "CODEGEN-AXIS CENSUS of the production V6-NAX forward genera…",
+      "promptPreview": "You are censusing the mlx-mfa V6-NAX autoresearch search space by READING SOURCE in /Users/marcomarcelino/code/mlx-mfa-v2. Read-only; do NOT modify any file. Key sources: mlx_mfa/_knobs.py (170 MFA_* knobs), ENV_VARS.md, docs/reference/ROUTING.md (prod shapes + dispatch line-anchors), csrc/mfa/v6_nax/NAAttentionKernel.cpp (createV6NAXSource codegen), csrc/mfa_v6_nax_primitive.cpp, mlx_mfa/dispatch…",
+      "lastProgressAt": 1786305500443,
+      "tokens": 121929,
+      "toolCalls": 22,
+      "durationMs": 358134,
+      "resultPreview": "{\"axes\":[{\"axis\":\"Simdgroup layout topology (WM x 1 Q-row partition vs 2x2 / 2D cooperative)\",\"current_default\":\"WM simdgroups each own a contiguous BQ/WM band of query rows (1-D partition along the parallelization/Q dim). TQ = BQ/(WM*16) with kU=16; each SG's row base tm = 16*TQ*simd_group_id; every SG runs an INDEPENDENT per-simdgroup NAXFrag MMA (no cross-SG cooperation). WM=4 for D=128, WM=2 f…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 7,
+      "label": "synthesis",
+      "phaseIndex": 2,
+      "phaseTitle": "Synthesis",
+      "agentId": "ad2c8a989692b5775",
+      "agentType": "general-purpose",
+      "model": "claude-opus-4-8",
+      "state": "done",
+      "startedAt": 1786305504055,
+      "queuedAt": 1786305502031,
+      "attempt": 1,
+      "promptPreview": "Synthesize a V6-NAX autoresearch search-space map from these per-family census results (JSON) and the codegen axes. Families: [{\"family\":\"dense_forward_D64_D128\",\"knob_axes\":[{\"knob\":\"MFA_V6_NAX_BQ\",\"domain\":\"parallelization (Q-block rows). Default D64=32, D128=64. Constraint BQ % (WM*16)==0; with kU=16 hardcoded, TQ=BQ/(WM*16) must equal 1 per Apple static_assert, so practically BQ==WM*16. Coarse…",
+      "lastProgressAt": 1786305724573,
+      "tokens": 114519,
+      "toolCalls": 0,
+      "durationMs": 220517,
+      "resultPreview": "# V6-NAX Autoresearch Search-Space Map (Phase-0 synthesis)\n\nSynthesized from the five per-family census blocks + the codegen-axis census. Read-only: no source modified, no independent re-verification of the census citations (they are carried through as-given; per RULE 16 the \"vestigial/pinned/blocked\" labels below are the census's hypotheses, and **every ratio is β3-indicative** — macOS 27 beta / …"
+    }
+  ],
+  "totalTokens": 957405,
+  "totalToolCalls": 130
+}
