@@ -5,7 +5,7 @@ an **inventory generated from that source and the 2026-07-30 regulator-controlle
 evidence** (Apple M5 Max, macOS 27 beta, MLX 0.31.2, `_ext` build of commit `558a191`). Every
 routing condition cites `file:line`; every measured ratio cites its evidence JSON by path and is
 `sdpa / native` median across both process orders (values > 1 favour mlx-mfa). The locked terminal
-map is [`docs/dispatch-map.md`](dispatch-map.md); the measurement contract and
+map is [`docs/reference/dispatch-map.md`](dispatch-map.md); the measurement contract and
 null floors are [`RESULTS.md`](../../RESULTS.md). Beta-3 indicative — revalidate on stable macOS.
 
 Terminals: `nax_dense` (dense NAX matmul2d), `v6nax_sparse` (sparse NAX), `mfa_primitive`
@@ -53,7 +53,7 @@ on 10/10 production D=128 shapes, never byte-identical to SDPA, 5–11 % slower 
 - Causal: unchanged 2.63 cells, `qL == kL` (U2).
 - Fallbacks: SDPA with a **bool** keep-mask (B2), empty rows → zeros per element row, size guard
   `MFA_SPARSE_FALLBACK_MAX_BYTES` (4 GiB; B1: rescue to the NAX kernel or refuse, never allocate).
-- `MFA_SPARSE_NAX_LEGACY_POLICY=1` → the 2.63 policy (one release). `MFA_SPARSE_NAX_EXTENDED` →
+- `MFA_SPARSE_NAX_LEGACY_POLICY=1` → the 2.63 default policy (one release; not the 2.63 extended opt-in). `MFA_SPARSE_NAX_EXTENDED` →
   deprecated no-op (warns).
 - Evidence: Volet A (16k–144k B1H40), DAY-3 Block 1 (B·H16, 204 cells, 0 loss), production shapes
   Phase 2 (N 200 000, B·H 56: engaged, row-correct; NAX time 0.10–0.19× of dense SDPA — M5 Max,
@@ -148,6 +148,6 @@ Full registry: [`ENV_VARS.md`](../../ENV_VARS.md). Status of the routing knobs r
 `MFA_ENABLE_V6_DENSE` (2.64: explicit dense NAX), `MFA_V6_DENSE_MIN_N` (its threshold, default 2048), `MFA_DISABLE_V6_DENSE` (opt-out), `MFA_DISABLE_V6_BACKWARD`
 (opt-out; D64 bwd default-on), `MFA_ENABLE_VARLEN_NAX` (opt-in, default-off), `MFA_ENABLE_CONV3D_*`
 (conv opt-ins, default-off). The sparse gate's DEFAULT is the 2.64 law (§2);
-`MFA_SPARSE_NAX_LEGACY_POLICY=1` restores the 2.63 policy for one release, `MFA_SPARSE_NAX_EXTENDED`
+`MFA_SPARSE_NAX_LEGACY_POLICY=1` restores the 2.63 default policy for one release, `MFA_SPARSE_NAX_EXTENDED`
 is a deprecated no-op, `MFA_SPARSE_D_DENSE_CUTOFF` (default 0.85) sets the near-dense threshold, and
 `MFA_SPARSE_FALLBACK_MAX_BYTES` (4 GiB) bounds the SDPA fallback's mask.

@@ -41,7 +41,7 @@ Terminal names come from runtime dispatch tracing and are the authoritative enga
 Between the ceiling and the cutoff: `sdpa` (bool keep-mask). `MFA_SPARSE_NAX_LEGACY_POLICY=1`
 restores the 2.63 table below.
 
-### Non-causal, 2.63 policy (legacy knob only)
+### Non-causal, 2.63 default policy (legacy knob only)
 
 | Dtype | N | B·H | D | Density ceiling |
 |---|---:|---:|---:|---:|
