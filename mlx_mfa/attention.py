@@ -3969,8 +3969,11 @@ def flash_attention_sparse(
     # traced.  fp32 is refused at entry for ALL sparse calls; qL != kL routes
     # gracefully to dense below.
     from mlx_mfa.lcsa_nax import (
-        SPARSE_NAX_MIN_MASK_BYTES as _SX_MIN_BYTES, _extended_prepare, _mask_bytes,
-        _sparse_extended_enabled as _sx_enabled)
+        SPARSE_NAX_MIN_MASK_BYTES as _SX_MIN_BYTES, _expand_bt64_exact, _extended_prepare,
+        _mask_bytes, _sparse_extended_enabled as _sx_enabled)
+    # 2.64 (D3): the extended envelope's exact 64 -> 32 expansion is the default (before
+    # auto_pad).  The opt-in branch below is inert (MFA_SPARSE_NAX_EXTENDED: no-op).
+    block_mask = _expand_bt64_exact(D, block_mask, N, S)
     if _sx_enabled():
         block_mask = _extended_prepare(D, block_mask, N, S)
         if _mask_bytes(block_mask) < _SX_MIN_BYTES:

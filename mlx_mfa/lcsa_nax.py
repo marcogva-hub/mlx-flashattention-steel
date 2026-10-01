@@ -478,6 +478,27 @@ def _extended_prepare(D: int, block_mask, N: int, S: int):
     return block_mask
 
 
+def _expand_bt64_exact(D: int, block_mask, N: int, S: int):
+    """2.64 (D3): the extended envelope's EXACT 64 -> 32 block expansion, on the default
+    path (no refusals).  A ceil-granular 64-token mask [.., ceil(N/64), ceil(S/64)] —
+    LongCat BSA / VSA tiles — becomes the 32-token mask the V6NAX kernel takes (each
+    block -> identical 2x2 sub-blocks, sliced to ceil(N/32)), BEFORE auto_pad so a
+    non-aligned sequence reaches the padded kernel.  Same conditions as the router's
+    aligned BT64 expansion: M5+, D in {64, 128}, the V6 sparse backward not opted in
+    (it needs bt >= 64), not under MFA_SPARSE_NAX_LEGACY_POLICY (2.63 refused these)."""
+    from mlx_mfa.attention import _get_is_m5_plus_cached
+    from mlx_mfa._knobs import get_bool_env
+    from mlx_mfa._env_aliases import get_bool_env_aliased
+    nq32, nk32 = -(-N // 32), -(-S // 32)
+    shape = tuple(block_mask.shape[-2:])
+    if (shape == (nq32, nk32) or shape != (-(-N // 64), -(-S // 64))
+            or D not in SPARSE_NAX_VIABLE_HEAD_DIMS or not _get_is_m5_plus_cached()
+            or get_bool_env_aliased("MFA_ENABLE_V6_BACKWARD") or _legacy_policy()
+            or get_bool_env("MFA_DISABLE_AUTO_HOOKS")):
+        return block_mask
+    return mx.repeat(mx.repeat(block_mask, 2, axis=-2), 2, axis=-1)[..., :nq32, :nk32]
+
+
 def _nax_sparse_route_viable(Q, K, block_tile, density, *, causal=False, V=None) -> bool:
     """Whether the V6NAX sparse route serves this call under the DEFAULT policy.
 

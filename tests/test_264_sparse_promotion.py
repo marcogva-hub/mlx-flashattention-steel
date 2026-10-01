@@ -233,3 +233,19 @@ def test_no_library_call_site_builds_a_float_bias_from_a_block_mask():
                 if re.search(rf"(?<!def ){re.escape(n)}\(", code) and "def " + n not in code:
                     offenders.append(f"{f.name}:{i}: {line.strip()}")
     assert not offenders, offenders
+
+
+@nax
+@pytest.mark.parametrize("N,H", [(4100, 12), (8200, 40)])
+def test_bt64_mask_at_non_aligned_n_reaches_the_padded_kernel(N, H):
+    """The extended envelope's exact 64->32 expansion is part of the default (D3): a
+    64-token block mask (LongCat BSA / VSA tiles) at a non-aligned N must reach the
+    auto_pad kernel — 2.63 needed MFA_SPARSE_NAX_EXTENDED; without it the default path
+    rejected the geometry."""
+    q, k, v = _qkv(1, H, N)
+    nb64 = -(-N // 64)
+    m64 = _periodic(nb64, nb64, 10)
+    o, term = _run(q, k, v, m64, auto_pad=True)
+    assert term[0] == "v6nax_sparse" and "auto_pad" in term[1], term
+    m32 = mx.repeat(mx.repeat(m64, 2, axis=-2), 2, axis=-1)[..., :-(-N // 32), :-(-N // 32)]
+    _oracle_gate(o, q, k, v, m32)
