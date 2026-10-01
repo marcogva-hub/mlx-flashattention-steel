@@ -48,7 +48,8 @@ def test_constants_documented_window():
     assert L.SPARSE_NAX_CAUSAL_MAX_BH == 12
     assert L.SPARSE_NAX_CAUSAL_DENSITY_CEILING == 0.30
     assert L.SPARSE_NAX_VIABLE_HEAD_DIMS == frozenset({64, 128})
-    assert L.SPARSE_NAX_DENSITY_CEILING == 0.30
+    assert L.SPARSE_NAX_DENSITY_CEILING == 0.50                    # 2.64 non-causal
+    assert L._LEGACY_DENSITY_CEILING == 0.30                        # 2.63 (legacy knob)
 
 
 @pytest.mark.parametrize("BT", [16, 32])

@@ -194,7 +194,7 @@ kernel runs when the block mask is at 32-token granularity (64-token masks are e
 exactly), dtype is f16/bf16, D is 64 or 128, and V matches Q/K, and:
 
 - **non-causal:** both lengths in [2,048, 200,000] (`qL ≠ kL` allowed), any `B·H`
-  (measured: 1, 4, 12, 16, 32, 40, 56), block density ≤ 0.30 — ≤ 0.05 for D128 `B·H` 4 and
+  (measured: 1, 4, 12, 16, 32, 40, 56), block density ≤ 0.50 — ≤ 0.05 for D128 `B·H` 4 and
   ≤ 0.25 for D64 `B·H` 12 when N < 8,192, where those lower ceilings were measured;
 - **near-dense (density ≥ 0.85, `MFA_SPARSE_D_DENSE_CUTOFF`):** the kernel whenever it
   can serve the call (non-causal, aligned lengths, same N bounds);

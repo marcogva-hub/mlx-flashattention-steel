@@ -143,14 +143,17 @@ _sage_avail_cached: Optional[bool] = None
 _VALID_BACKENDS: frozenset = frozenset({"auto", "mfa", "sdpa", "sage"})
 
 # Optional further restriction inside the canonical β3 sparse route. The env
-# cannot widen `_nax_sparse_route_viable`; default 0.30 is the largest density in
-# the hardened same-dtype map (2026-07-13, MLX 0.31.2, macOS 27 beta).
+# cannot widen `_nax_sparse_route_viable`; its default is the law's non-causal
+# ceiling (lcsa_nax.SPARSE_NAX_DENSITY_CEILING, 0.50 since 2.64), so an unset env
+# never narrows the law.
 def _nax_sparse_density_ceiling() -> float:
     import os as _os
+    from mlx_mfa.lcsa_nax import SPARSE_NAX_DENSITY_CEILING
     try:
-        return float(_os.environ.get("MFA_NAX_SPARSE_DENSITY_CEILING", "0.30"))
+        return float(_os.environ.get("MFA_NAX_SPARSE_DENSITY_CEILING",
+                                     SPARSE_NAX_DENSITY_CEILING))
     except ValueError:
-        return 0.30
+        return SPARSE_NAX_DENSITY_CEILING
 
 # CP1: dispatch decision cache — keyed by shape, head topology, causal/device,
 # dtype, window_size, sparse.  Eliminates should_use_mfa() call overhead on

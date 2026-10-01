@@ -345,7 +345,13 @@ SPARSE_NAX_VIABLE_HEAD_DIMS = frozenset({64, 128})
 SPARSE_NAX_MEASURED_BH_COVERAGE = frozenset({1, 4, 12, 16, 32, 40, 56})
 SPARSE_NAX_MIN_N = 2048
 SPARSE_NAX_MAX_N = 200_000
-SPARSE_NAX_DENSITY_CEILING = 0.30
+# Non-causal ceiling 0.50 (Marco 2026-10-01): Volet A gate 6 — sliding "d0.50" (measured
+# block density 0.44), B1H40 D128, N 16384-144288: 1.61-2.04x vs dense SDPA; 2.64 re-probe
+# (public API vs SDPA + bool mask, M5 Max, MLX 0.31.2) at d 0.42-0.48: 1.10-2.29x on 7/8
+# engaged cells, B*H1 N2048 D128 d0.48 0.91 (sub-ms, indicative).  The causal cells, the
+# lower ceilings below N=8192 and the legacy 2.63 policy keep their 0.30 / measured values.
+SPARSE_NAX_DENSITY_CEILING = 0.50
+_LEGACY_DENSITY_CEILING = 0.30                      # the 2.63 non-causal ceiling
 # The lower measured ceilings below held at N < 8192 (the 2.63 map: N=8192 won all
 # 36 fp16 cells at d <= 0.30); they are kept in exactly that range.
 SPARSE_NAX_LOWER_CEILING_BELOW_N = 8192
@@ -506,8 +512,8 @@ def _nax_sparse_route_viable(Q, K, block_tile, density, *, causal=False, V=None)
     Capacity first (32-token tile, fp16/bf16, D in {64, 128}, V matching Q/K), then:
       * 2.64 non-causal law (B4/B5): qL, kL in [SPARSE_NAX_MIN_N, SPARSE_NAX_MAX_N],
         qL != kL allowed (the kernel documents non-causal rectangular), any B*H,
-        density <= 0.30 — and the measured lower ceilings (D128 B*H4 0.05, D64 B*H12
-        0.25) below N=8192, where they were measured.
+        density <= SPARSE_NAX_DENSITY_CEILING (0.50) — and the measured lower ceilings
+        (D128 B*H4 0.05, D64 B*H12 0.25) below N=8192, where they were measured.
       * causal: the 2.63 exact cells, unchanged (qL == kL — U2).
     ``MFA_SPARSE_NAX_LEGACY_POLICY=1`` restores the 2.63 default decision (not the 2.63
     extended opt-in envelope)."""
@@ -571,14 +577,14 @@ def _route_viable_263(Q, K, density, *, causal=False) -> bool:
     if Q.dtype == mx.bfloat16:
         return (_LEGACY_MIN_N <= qL <= _LEGACY_MAX_N
                 and D == 128 and bh == 12
-                and density <= SPARSE_NAX_DENSITY_CEILING)
+                and density <= _LEGACY_DENSITY_CEILING)
     if (qL == _LEGACY_MAX_N and bh in _LEGACY_MEASURED_BH
-            and density <= SPARSE_NAX_DENSITY_CEILING):
+            and density <= _LEGACY_DENSITY_CEILING):
         return True
     if not (_LEGACY_MIN_N <= qL <= _LEGACY_MAX_N):
         return False
     if bh == 12 and D == 128:
-        return density <= SPARSE_NAX_DENSITY_CEILING
+        return density <= _LEGACY_DENSITY_CEILING
     if bh == 12 and D == 64:
         return density <= SPARSE_NAX_D64_BH12_DENSITY_CEILING
     if bh == 4 and D == 128:

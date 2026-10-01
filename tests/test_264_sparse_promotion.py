@@ -96,7 +96,7 @@ def _oracle_gate(o, q, k, v, m, causal=False, rows=(0, 1, 777, -1)):
 def test_promoted_constants():
     assert ln.SPARSE_NAX_MIN_N == 2048
     assert ln.SPARSE_NAX_MAX_N == 200_000
-    assert ln.SPARSE_NAX_DENSITY_CEILING == 0.30
+    assert ln.SPARSE_NAX_DENSITY_CEILING == 0.50
     assert ln.SPARSE_NAX_MEASURED_BH_COVERAGE == frozenset({1, 4, 12, 16, 32, 40, 56})
 
 
@@ -114,11 +114,12 @@ def test_law_n_bounds(N, ok):
     assert ln._nax_sparse_route_viable(q, q, 32, 0.1, causal=False, V=q) is ok
 
 
-@pytest.mark.parametrize("bh,D,d,ok", [(12, 128, 0.30, True), (12, 128, 0.31, False),
+@pytest.mark.parametrize("bh,D,d,ok", [(12, 128, 0.50, True), (12, 128, 0.51, False),
                                        (4, 128, 0.05, True), (4, 128, 0.06, False),
                                        (12, 64, 0.25, True), (12, 64, 0.26, False)])
 def test_ceilings_are_kept(bh, D, d, ok):
-    """The lower ceilings were measured at N < 8192 (N=8192 won every cell at 0.30)."""
+    """The lower ceilings were measured at N < 8192 (N=8192 won every cell at 0.30); the
+    general non-causal ceiling is 0.50 (2.64)."""
     q = mx.zeros((1, bh, 4096, D), dtype=mx.float16)
     assert ln._nax_sparse_route_viable(q, q, 32, d, causal=False, V=q) is ok
 
@@ -263,3 +264,61 @@ def test_quasi_dense_and_rescue_honour_the_scalar_kernel_override(monkeypatch):
     monkeypatch.setenv("MFA_SPARSE_FALLBACK_MAX_BYTES", str(2**20))
     with pytest.raises(RuntimeError, match="MFA_SPARSE_FALLBACK_MAX_BYTES"):
         mx.eval(flash_attention_sparse(q, k, v, m))
+
+
+# ── 2.64 non-causal density ceiling 0.50 (Marco 2026-10-01) ──────────────────────
+# Evidence: Volet A gate 6 (sliding "d0.50" = measured block density 0.44, B1H40 D128,
+# N 16384-144288: 1.61-2.04x vs dense SDPA); 2.64 re-probe at d 0.42-0.48 (public API vs
+# SDPA + bool mask): 1.10-2.29x on 7/8 engaged cells, B*H1 N2048 D128 d0.48 0.91 (sub-ms).
+# The causal cells, the lower ceilings below N=8192 and the legacy (2.63) policy keep 0.30.
+def test_non_causal_ceiling_is_050():
+    assert ln.SPARSE_NAX_DENSITY_CEILING == 0.50
+    q = mx.zeros((1, 12, 8192, 128), dtype=mx.float16)
+    assert ln._nax_sparse_route_viable(q, q, 32, 0.50, causal=False, V=q)
+    assert not ln._nax_sparse_route_viable(q, q, 32, 0.51, causal=False, V=q)
+
+
+def test_causal_and_legacy_ceilings_stay_030(monkeypatch):
+    assert ln.SPARSE_NAX_CAUSAL_DENSITY_CEILING == 0.30
+    assert ln._LEGACY_DENSITY_CEILING == 0.30
+    q = mx.zeros((1, 12, 8192, 128), dtype=mx.float16)
+    assert not ln._nax_sparse_route_viable(q, q, 32, 0.40, causal=True, V=q)
+    monkeypatch.setenv("MFA_SPARSE_NAX_LEGACY_POLICY", "1")
+    assert ln._nax_sparse_route_viable(q, q, 32, 0.30, causal=False, V=q)
+    assert not ln._nax_sparse_route_viable(q, q, 32, 0.40, causal=False, V=q)
+
+
+def test_env_ceiling_default_follows_the_law(monkeypatch):
+    from mlx_mfa import attention as att
+    monkeypatch.delenv("MFA_NAX_SPARSE_DENSITY_CEILING", raising=False)
+    assert att._nax_sparse_density_ceiling() == ln.SPARSE_NAX_DENSITY_CEILING
+    monkeypatch.setenv("MFA_NAX_SPARSE_DENSITY_CEILING", "0.30")
+    assert att._nax_sparse_density_ceiling() == 0.30
+
+
+@nax
+def test_density_042_engages_nax_and_env_can_restrict(monkeypatch):
+    q, k, v = _qkv(1, 12, 4096)
+    m = _periodic(128, 128, 3) | _periodic(128, 128, 4)       # density ~0.5 (1/3 + 1/4 - 1/12)
+    d = float(ln.mask_density(m))
+    assert 0.30 < d <= 0.50, d
+    o, term = _run(q, k, v, m)
+    assert term[0] == "v6nax_sparse", term
+    assert bool(mx.array_equal(o, _raw(q, k, v, m)))
+    _oracle_gate(o, q, k, v, m)
+    monkeypatch.setenv("MFA_NAX_SPARSE_DENSITY_CEILING", "0.30")
+    _, term = _run(q, k, v, m)
+    assert term[0] == "sdpa", term
+
+
+@nax
+def test_sla_topk_050_engages_the_kernel():
+    """The CHANGELOG narrowing example (sla_attention topk_ratio 0.5) is gone (B*H16: the
+    D128 B*H4 lower ceiling 0.05 below N=8192 is kept and would send B*H4 to SDPA)."""
+    from mlx_mfa.sla import sla_attention
+    q, k, v = _qkv(1, 16, 4096)
+    with dt.capture() as tr:
+        o = sla_attention(q, k, v, topk_ratio=0.5)
+        mx.eval(o)
+    assert any(t[0] == "v6nax_sparse" for t in tr), [t[:2] for t in tr]
+    assert bool(mx.all(mx.isfinite(o)).item())

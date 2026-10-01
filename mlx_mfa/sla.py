@@ -146,8 +146,9 @@ def sla_attention(
         extended: 2.64 — kept for compatibility, no routing effect: the default sparse
                   law now covers any B·H and N up to 200000 (auto_pad included), so the
                   sparse term reaches the block-skip without it.  Unlike 2.63's opt-in, the
-                  density ceilings are KEPT: a ``topk_ratio`` above 0.30 (and below the
-                  0.85 near-dense cutoff) runs the SDPA fallback.  ``True`` still raises
+                  density ceilings are KEPT: a ``topk_ratio`` above 0.50 (and below the
+                  0.85 near-dense cutoff) runs the SDPA fallback, as do the measured lower
+                  ceilings below N=8192 (D128 B*H4 0.05, D64 B*H12 0.25).  ``True`` still raises
                   pre-M5 (its documented contract); ``None`` and ``False`` are equivalent.
 
     Returns:

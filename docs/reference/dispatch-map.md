@@ -33,7 +33,7 @@ Terminal names come from runtime dispatch tracing and are the authoritative enga
 
 | N (both lengths) | qL vs kL | B·H | Density ceiling |
 |---|---|---|---:|
-| 2048..200000 | qL ≠ kL allowed | any (measured: 1, 4, 12, 16, 32, 40, 56) | 0.30 |
+| 2048..200000 | qL ≠ kL allowed | any (measured: 1, 4, 12, 16, 32, 40, 56) | 0.50 |
 | < 8192 | — | 4 (D=128) | 0.05 |
 | < 8192 | — | 12 (D=64) | 0.25 |
 | 2048..200000, density ≥ `MFA_SPARSE_D_DENSE_CUTOFF` (0.85) | aligned | any | — (quasi-dense → `v6nax_sparse` whenever the kernel can serve the call) |

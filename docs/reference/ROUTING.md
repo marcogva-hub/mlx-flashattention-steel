@@ -46,8 +46,13 @@ on 10/10 production D=128 shapes, never byte-identical to SDPA, 5–11 % slower 
 - Capacity: `block_tile == 32`, f16/bf16, D ∈ {64,128}, V matching Q/K, mask ≥ 4096 B.
 - Non-causal law: both lengths in [`SPARSE_NAX_MIN_N`=2048, `SPARSE_NAX_MAX_N`=200000], `qL ≠ kL`
   allowed (B5; kernel-documented, exact on the FlashVSR shapes), any B·H (coverage
-  `SPARSE_NAX_MEASURED_BH_COVERAGE` = {1,4,12,16,32,40,56}), density ≤ 0.30; below N=8192 the
-  measured lower ceilings hold (D128 B·H4 0.05, D64 B·H12 0.25).
+  `SPARSE_NAX_MEASURED_BH_COVERAGE` = {1,4,12,16,32,40,56}), density ≤ 0.50; below N=8192 the
+  measured lower ceilings hold (D128 B·H4 0.05, D64 B·H12 0.25). Ceiling 0.50 (Marco 2026-10-01; 2.63:
+  0.30): Volet A sliding "d0.50" cells (measured block density 0.44, B1H40 D128, N 16384–144288)
+  1.61–2.04× vs dense SDPA (M5 Max, MLX 0.31.2, 2.63-era kernel, 2026-08-12); 2.64 re-probe through the
+  public API vs SDPA + bool mask at density 0.42–0.48: 1.10–2.29× on 7/8 engaged cells, B·H1 N2048 D128
+  d0.48 0.91× (sub-ms, in-process n=6 — indicative; M5 Max, MLX 0.31.2, mlx-mfa 2.64.0, 2026-10-01).
+  Causal cells and the legacy 2.63 policy keep 0.30.
 - Near-dense (B6): density ≥ `MFA_SPARSE_D_DENSE_CUTOFF` (0.85) → `v6nax_sparse` whenever the kernel
   can serve the call (non-causal, aligned or `auto_pad`, law N bounds), else `sdpa` + bool mask.
 - Causal: unchanged 2.63 cells, `qL == kL` (U2).

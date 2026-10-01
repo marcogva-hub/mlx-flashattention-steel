@@ -22,17 +22,18 @@ A and B, and a re-measurement of the DAY-3 tile bands against the new default
   `MFA_ENABLE_V6_DENSE`.
 - **Sparse: the former extended envelope is the default law** (`flash_attention_sparse`,
   `sparse_attention_dispatch`, `sla_attention`). Non-causal calls take the V6NAX sparse kernel for
-  both lengths in [2048, 200000], any B·H (measured: 1, 4, 12, 16, 32, 40, 56), fp16/bf16, with the
-  density ceilings kept as measured (0.30; 0.05 for D128 B·H4 and 0.25 for D64 B·H12 below
-  N=8192). The causal policy is unchanged. 64-token masks are expanded exactly to 32-token
+  both lengths in [2048, 200000], any B·H (measured: 1, 4, 12, 16, 32, 40, 56), fp16/bf16, at
+  block density ≤ 0.50 (raised from 2.63's 0.30 on the Volet A d0.50 cells and a 2.64 re-probe at
+  0.42–0.48 — `docs/reference/ROUTING.md`), keeping the measured lower ceilings below N=8192 (0.05 for
+  D128 B·H4, 0.25 for D64 B·H12). The causal policy is unchanged (0.30). 64-token masks are expanded exactly to 32-token
   masks before `auto_pad`, so non-aligned LongCat BSA / VSA masks reach the padded kernel.
   `MFA_SPARSE_NAX_LEGACY_POLICY=1` restores the 2.63 default policy for this release (not the 2.63
   `MFA_SPARSE_NAX_EXTENDED=1` / `sla_attention` envelope: under the knob `sla_attention`'s sparse term
   follows the 2.63 default policy).
-  **Narrowing for 2.63 opt-in users:** `MFA_SPARSE_NAX_EXTENDED=1` (and `sla_attention` on M5,
-  which turned it on by default) had no density ceiling below the cutoff and no N bounds. In
-  2.64 the ceilings are kept, so block density between 0.30 and 0.85 (e.g. `sla_attention`
-  with `topk_ratio` 0.5) now runs the SDPA fallback where 2.63 ran the V6NAX kernel.
+  For 2.63 opt-in users (`MFA_SPARSE_NAX_EXTENDED=1`, and `sla_attention` on M5, which turned it
+  on): `sla_attention` up to `topk_ratio` 0.5 keeps the V6NAX kernel. Only block density in
+  (0.50, 0.85), the two lower ceilings below N=8192 and N outside [2048, 200000] now take the SDPA
+  fallback where the 2.63 opt-in, which had no ceilings or N bounds, ran the kernel.
 - **Non-causal `qL ≠ kL`** sparse calls take the V6NAX kernel (the kernel documents rectangular
   non-causal; exact on the FlashVSR shapes 2048×8192 and 2560×10240). Causal `qL ≠ kL` stays
   refused.
@@ -65,7 +66,9 @@ A and B, and a re-measurement of the DAY-3 tile bands against the new default
 - Knobs: `MFA_ENABLE_V6_DENSE`, `MFA_SPARSE_FALLBACK_MAX_BYTES` (default 4 GiB),
   `MFA_SPARSE_NAX_LEGACY_POLICY`.
 - **Sparse fallback size guard** (forward fallbacks of both entry points; the SDPA-vjp backward
-  is not guarded): a fallback mask above `MFA_SPARSE_FALLBACK_MAX_BYTES` is never allocated. The call goes to the V6NAX kernel when it can serve it (aligned, or `auto_pad` for
+  is deliberately not guarded — its peak is MLX's SDPA vjp, measured at about 6.2–6.5 bytes per
+  B·H·N·S element in fp16 at D=128, e.g. about 70 GB for B=1, H=40, N=16 384; see `ENV_VARS.md`): a
+  fallback mask above `MFA_SPARSE_FALLBACK_MAX_BYTES` is never allocated. The call goes to the V6NAX kernel when it can serve it (aligned, or `auto_pad` for
   square non-aligned calls), else it raises. The 2.63 default would have built a float bias of
   about 1.8 TB for LongCat stage 3 (N=168 960, 32 heads).
 - `lcsa_nax.mask_density`: exact block density without a float32 copy of the mask.
