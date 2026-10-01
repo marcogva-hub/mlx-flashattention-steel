@@ -365,7 +365,10 @@ PERF_CLAIMS = [
     # (B·H=16) only when the documented opt-in is set, and changes the output.
     {
         "id": "v2.63.0_sparse_extended_nax_opt_in",
-        "env": {"MFA_SPARSE_NAX_EXTENDED": "1"},
+        # 2.64 (B4): the 2.63 opt-in is the DEFAULT law; the differential arm is the
+        # legacy policy (B*H16 is outside the 2.63 {1, 4, 12} allowlist -> SDPA there).
+        "env": {},
+        "off_env": {"MFA_SPARSE_NAX_LEGACY_POLICY": "1"},
         "shape": (1, 16, 6144, 6144, 128),
         "dtype": mx.float16,
         "expected": "sparse_extended_nax",
@@ -378,7 +381,10 @@ PERF_CLAIMS = [
     },
     {
         "id": "v2.63.0_sla_attention_default_m5",
+        # 2.64: `extended=` has no routing effect; the default law engages at N2048 B*H2,
+        # the legacy policy (N in [4096, 8192], B*H in {1, 4, 12}) does not.
         "env": {},
+        "off_env": {"MFA_SPARSE_NAX_LEGACY_POLICY": "1"},
         "shape": (1, 2, 2048, 2048, 64),
         "dtype": mx.float16,
         "expected": "sla_extended",
@@ -490,26 +496,31 @@ def test_perf_claim_engages_via_public_api(claim, monkeypatch):
         return
 
     # --- 2.63.0 sparse extended opt-in / SLA: engagement via the dispatch trace
-    # through the public entry + differential output (opt-in vs default route).
+    # through the public entry + differential output.  2.64: the claim holds on the
+    # DEFAULT route; the differential arm is `off_env` (the legacy 2.63 policy).
     if claim["expected"] in ("sparse_extended_nax", "sla_extended"):
         from mlx_mfa import _dispatch_trace as _dt
         from mlx_mfa.attention import _get_is_m5_plus_cached
         if not _get_is_m5_plus_cached():
             pytest.skip("the V6NAX sparse kernel is M5+ only")
-        monkeypatch.delenv("MFA_SPARSE_NAX_EXTENDED", raising=False)
+        for _k in ("MFA_SPARSE_NAX_EXTENDED", "MFA_SPARSE_NAX_LEGACY_POLICY"):
+            monkeypatch.delenv(_k, raising=False)
         B, H, qL, kL, D = claim["shape"]
         mx.random.seed(7)
         q, k, v = (mx.random.normal((B, H, qL, D)).astype(claim["dtype"]) for _ in range(3))
         if claim["expected"] == "sla_extended":
             from mlx_mfa.sla import sla_attention
-            run = lambda: sla_attention(q, k, v, topk_ratio=0.1)           # defaults
-            run_off = lambda: sla_attention(q, k, v, topk_ratio=0.1, extended=False)
+            run = run_off = lambda: sla_attention(q, k, v, topk_ratio=0.1)  # defaults
         else:
             nb = qL // 32
             bm = (mx.random.uniform(shape=(nb, nb)) < 0.1) | mx.eye(nb, dtype=mx.bool_)
             run = run_off = lambda: mlx_mfa.flash_attention_sparse(q, k, v, bm)
+        for kk, vv in claim.get("off_env", {}).items():
+            monkeypatch.setenv(kk, vv)
         with _dt.capture() as off_cap:
             o_off = run_off(); mx.eval(o_off)
+        for kk in claim.get("off_env", {}):
+            monkeypatch.delenv(kk, raising=False)
         for kk, vv in claim["env"].items():
             monkeypatch.setenv(kk, vv)
         with _dt.capture() as cap:
@@ -519,9 +530,9 @@ def test_perf_claim_engages_via_public_api(claim, monkeypatch):
             f"{[r[:2] for r in cap]} — per CLAUDE_V6_NAX.md §Z fix the routing or "
             f"correct the claim ({claim['documented_perf_claim']}).")
         assert not any(r[0] == "v6nax_sparse" for r in off_cap), (
-            "the default route already engages the kernel — the opt-in claim is vacuous")
+            "the differential arm (off_env) already engages the kernel — vacuous claim")
         delta = float(mx.max(mx.abs(o_on.astype(mx.float32) - o_off.astype(mx.float32))))
-        assert delta > 0.0, "opt-in and default outputs are byte-identical (same path)"
+        assert delta > 0.0, "claim arm and differential arm are byte-identical (same path)"
         assert bool(mx.all(mx.isfinite(o_on)).item())
         return
 

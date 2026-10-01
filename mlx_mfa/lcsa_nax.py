@@ -509,7 +509,8 @@ def _nax_sparse_route_viable(Q, K, block_tile, density, *, causal=False, V=None)
         density <= 0.30 — and the measured lower ceilings (D128 B*H4 0.05, D64 B*H12
         0.25) below N=8192, where they were measured.
       * causal: the 2.63 exact cells, unchanged (qL == kL — U2).
-    ``MFA_SPARSE_NAX_LEGACY_POLICY=1`` restores the complete 2.63 decision."""
+    ``MFA_SPARSE_NAX_LEGACY_POLICY=1`` restores the 2.63 default decision (not the 2.63
+    extended opt-in envelope)."""
     if block_tile not in SPARSE_NAX_VIABLE_BLOCK_TILES:
         return False
     if Q.dtype not in (mx.float16, mx.bfloat16):
@@ -557,7 +558,7 @@ def _causal_cells_263(qL, D, bh, dtype, density) -> bool:
 
 
 def _route_viable_263(Q, K, density, *, causal=False) -> bool:
-    """The complete 2.63 policy (capacity already checked) — MFA_SPARSE_NAX_LEGACY_POLICY=1."""
+    """The 2.63 default policy (capacity already checked) — MFA_SPARSE_NAX_LEGACY_POLICY=1."""
     D = int(Q.shape[3])
     qL, kL = int(Q.shape[2]), int(K.shape[2])
     if qL != kL:                       # square-only in v1 (capacity-adjacent)

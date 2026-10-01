@@ -209,7 +209,7 @@ The STEEL sparse kernel is disabled on M3+ at D=128 for correctness. If that for
 fallback's mask would exceed `MFA_SPARSE_FALLBACK_MAX_BYTES` (4 GiB), the call goes to the
 NAX kernel when it can serve it and is refused otherwise — never allocated (both entry
 points; the SDPA-vjp backward is not guarded).
-`MFA_SPARSE_NAX_LEGACY_POLICY=1` restores the 2.63 sparse policy for one release.
+`MFA_SPARSE_NAX_LEGACY_POLICY=1` restores the 2.63 default sparse policy for one release (not the 2.63 opt-in extended envelope).
 
 ## Specialized examples
 

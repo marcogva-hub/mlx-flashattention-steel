@@ -63,25 +63,50 @@ def test_forward_bk16_guard_raises():
     mx.eval(q, k, v)
     sc = 1.0 / math.sqrt(128)
     prev = os.environ.get("MFA_V6_NAX_BK")
+    prev_en = os.environ.get("MFA_ENABLE_V6_DENSE")
     os.environ["MFA_V6_NAX_BK"] = "16"
+    os.environ["MFA_ENABLE_V6_DENSE"] = "1"   # 2.64 D1: auto D=128 is SDPA without it
     try:
         with pytest.raises(RuntimeError, match=r"multiple of 32|16x32x16|paired"):
             o = mlx_mfa.flash_attention(q, k, v, scale=sc, causal=False)
             mx.eval(o)
     finally:
         _restore("MFA_V6_NAX_BK", prev)
+        _restore("MFA_ENABLE_V6_DENSE", prev_en)
+
+
+def test_forward_explicit_bk16_tile_raises():
+    """2.64 sibling: an explicit per-call tile triple (the tile-table channel) goes through
+    the same BK%32 guard as the env override — a BK=16 row can never reach the kernel."""
+    from mlx_mfa import _ext
+    mx.random.seed(0)
+    q = (mx.random.normal((1, 8, 2048, 128)) * 0.1).astype(mx.float16)
+    mx.eval(q)
+    with pytest.raises((RuntimeError, ValueError), match=r"multiple of 32"):
+        o = _ext.v6_nax_forward(q, q, q, False, True, 1.0 / math.sqrt(128), 32, 16, 2)
+        mx.eval(o)
 
 
 def test_forward_default_bk_ok():
-    """The valid default tile (BK=32) compiles + runs — the guard is not over-broad."""
+    """The valid default tile (BK=32) compiles + runs — the guard is not over-broad.
+    2.64 D1: run under MFA_ENABLE_V6_DENSE=1 and assert the NAX binary ran (byteΔ>0 vs
+    SDPA) — the default auto route is SDPA and would make this vacuous."""
     mx.random.seed(0)
     q = (mx.random.normal((1, 8, 2048, 128)) * 0.1).astype(mx.float16)
     k, v = q + 0.0, q + 0.0
     mx.eval(q, k, v)
-    o = mlx_mfa.flash_attention(q, k, v, scale=1.0 / math.sqrt(128), causal=False)
-    mx.eval(o)
+    sc = 1.0 / math.sqrt(128)
+    prev_en = os.environ.get("MFA_ENABLE_V6_DENSE")
+    os.environ["MFA_ENABLE_V6_DENSE"] = "1"
+    try:
+        o = mlx_mfa.flash_attention(q, k, v, scale=sc, causal=False)
+        mx.eval(o)
+    finally:
+        _restore("MFA_ENABLE_V6_DENSE", prev_en)
     assert o.shape == (1, 8, 2048, 128)
     assert bool(mx.all(mx.isfinite(o)).item())
+    sd = mx.fast.scaled_dot_product_attention(q, k, v, scale=sc)
+    assert float(mx.max(mx.abs(o.astype(mx.float32) - sd.astype(mx.float32))).item()) > 0.0
 
 
 @pytest.mark.parametrize("causal", [False, True])

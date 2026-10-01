@@ -26,7 +26,9 @@ A and B, and a re-measurement of the DAY-3 tile bands against the new default
   density ceilings kept as measured (0.30; 0.05 for D128 B·H4 and 0.25 for D64 B·H12 below
   N=8192). The causal policy is unchanged. 64-token masks are expanded exactly to 32-token
   masks before `auto_pad`, so non-aligned LongCat BSA / VSA masks reach the padded kernel.
-  `MFA_SPARSE_NAX_LEGACY_POLICY=1` restores the complete 2.63 policy for this release.
+  `MFA_SPARSE_NAX_LEGACY_POLICY=1` restores the 2.63 default policy for this release (not the 2.63
+  `MFA_SPARSE_NAX_EXTENDED=1` / `sla_attention` envelope: under the knob `sla_attention`'s sparse term
+  follows the 2.63 default policy).
   **Narrowing for 2.63 opt-in users:** `MFA_SPARSE_NAX_EXTENDED=1` (and `sla_attention` on M5,
   which turned it on by default) had no density ceiling below the cutoff and no N bounds. In
   2.64 the ceilings are kept, so block density between 0.30 and 0.85 (e.g. `sla_attention`

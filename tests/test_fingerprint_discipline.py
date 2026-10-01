@@ -64,7 +64,10 @@ class TestKnownWrongBinaryLockedAsSDPA:
     the old silent-fallback bug, but deliberate routing:
       (a) ASYMMETRIC / custom masks (bt_q != bt_k) — skip the symmetric auto-route;
       (b) SMALL masks (mask_bytes < 4096) — NAX device-pointer lowering excludes them;
-      (c) DENSE symmetric masks (above the region ceiling) — NAX loses, gate → SDPA.
+      (c) DENSE symmetric masks (above the region ceiling) — under the legacy 2.63
+          policy (`MFA_SPARSE_NAX_LEGACY_POLICY=1`) the gate → SDPA.  2.64 (B6): by
+          default, density >= SPARSE_NAX_D_DENSE_CUTOFF takes the V6NAX kernel (locked
+          positively in TestFingerprintDisciplineDemo).
     Byte-identity (Δ==0.0 vs SDPA) is the fingerprint. A flip means a routing
     drift that must be re-examined."""
 
@@ -93,9 +96,10 @@ class TestKnownWrongBinaryLockedAsSDPA:
         assert _delta(o, ref) == 0.0, (
             "small (mask_bytes<4096) D=128 sparse rerouted off SDPA — update lock")
 
-    def test_dense_symmetric_d128_is_sdpa_via_density_gate(self):
-        # (c) DENSE symmetric mask (above the region ceiling): the hardened
-        # gate routes it to the SDPA fallback (NAX loses when near-dense).
+    def test_dense_symmetric_d128_is_sdpa_via_density_gate(self, monkeypatch):
+        # (c) DENSE symmetric mask (above the region ceiling): under the legacy 2.63
+        # policy the hardened gate routes it to the SDPA fallback.
+        monkeypatch.setenv("MFA_SPARSE_NAX_LEGACY_POLICY", "1")
         B, H, N, D = 1, 4, 2048, 128
         q, k, v = _qkv(B, H, N, D); sc = 1 / math.sqrt(D)
         NB = N // 32
@@ -105,11 +109,25 @@ class TestKnownWrongBinaryLockedAsSDPA:
         ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=sc, mask=_bias(m, N, N))
         assert _delta(o, ref) == 0.0, (
             "dense symmetric D=128 sparse did NOT hit the density gate → SDPA "
-            "(Phase F regression: gate threshold or routing changed)")
+            "under MFA_SPARSE_NAX_LEGACY_POLICY=1 (the legacy knob drifted)")
 
 
 # ── 2. positive fingerprint demo: symmetric D=128 sparse IS a real kernel ─────
 class TestFingerprintDisciplineDemo:
+    def test_quasi_dense_symmetric_d128_is_v6nax(self, monkeypatch):
+        """2.64 B6: the (c) cell above by default — density 0.90 >= the 0.85 cutoff takes
+        the V6NAX kernel (a real, distinct binary: byteΔ>0 vs the masked SDPA) and stays
+        correct vs the SDPA math."""
+        monkeypatch.delenv("MFA_SPARSE_NAX_LEGACY_POLICY", raising=False)
+        B, H, N, D = 1, 4, 2048, 128
+        q, k, v = _qkv(B, H, N, D); sc = 1 / math.sqrt(D)
+        NB = N // 32
+        m = mx.array(np.random.default_rng(0).random((NB, NB)) < 0.90)
+        o = flash_attention_sparse(q, k, v, m, scale=sc)
+        ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=sc, mask=_bias(m, N, N))
+        d = _delta(o, ref)
+        assert 0.0 < d < 3e-2, f"quasi-dense D=128 sparse: byteΔ={d:.3e} (0 ⇒ SDPA, not V6NAX)"
+
     def test_symmetric_d128_sparse_is_real_kernel_not_sdpa(self):
         """The CORRECT way to test the sparse kernel at D=128: a symmetric mask.
         Asserts a real distinct kernel ran (byteΔ>0 vs SDPA). Drift to the SDPA

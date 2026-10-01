@@ -102,18 +102,43 @@ def cell(path, regime, engaged):
     return deco
 
 
+def _with_env(runner, env):
+    """Run a cell runner with env vars set for the whole call (the routing decision and
+    the mx.eval both happen inside the runner), restoring them afterwards."""
+    keys = set(env) | {"MFA_ENABLE_V6_DENSE", "MFA_DISABLE_V6_DENSE", "MLX_MFA_DISPATCH_TABLE"}
+
+    def run(dt, causal):
+        prev = {k: os.environ.get(k) for k in keys}
+        for k in keys:
+            os.environ.pop(k, None)
+        os.environ.update(env)
+        try:
+            return runner(dt, causal)
+        finally:
+            for k, val in prev.items():
+                if val is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = val
+    return run
+
+
+_V6_DENSE_ON = {"MFA_ENABLE_V6_DENSE": "1"}
+
+
 def _run_dense(dt, causal, B, H, Nq, Nk, scale=None, seed=0):
     D = 128 if dt is mx.float16 else 128
     return None  # placeholder; real runners below set D explicitly
 
 
-# -- Dense forward (D=64 → SDPA; D=128 N>=2048 → NAX real) ---------------------
-def _dense_runner(D, Nq, Nk, big):
+# -- Dense forward (D=64 → SDPA; 2.64 D1: D=128 auto → SDPA outside the measured
+# tile-table rows; NAX dense under MFA_ENABLE_V6_DENSE=1 or inside a table row) -----
+def _dense_runner(D, Nq, Nk, big, H=4):
     def run(dt, causal):
         scale = 1.0 / math.sqrt(D)
-        q = _rand((1, 4, Nq, D), dt, 1)
-        k = _rand((1, 4, Nk, D), dt, 2)
-        v = _rand((1, 4, Nk, D), dt, 3)
+        q = _rand((1, H, Nq, D), dt, 1)
+        k = _rand((1, H, Nk, D), dt, 2)
+        v = _rand((1, H, Nk, D), dt, 3)
         with _dt.capture() as tr:
             o = mlx_mfa.flash_attention(q, k, v, scale=scale, causal=causal)
             mx.eval(o)
@@ -124,7 +149,7 @@ def _dense_runner(D, Nq, Nk, big):
     return run
 
 
-for D, eng in ((64, "sdpa"), (128, "real")):
+for D, eng in ((64, "sdpa"), (128, "sdpa")):
     _CELLS += [("dense_D%d" % D, DT_NAME[dt], c, "square_N2048", dt, eng,
                 _dense_runner(D, 2048, 2048, True))
                for dt in (mx.float16, mx.bfloat16) for c in (False, True)]
@@ -133,6 +158,15 @@ for D, eng in ((64, "sdpa"), (128, "real")):
     _CELLS += [("dense_D%d" % D, DT_NAME[dt], c, "tail_Nq<Nk_2048x2304", dt,
                 "sdpa", _dense_runner(D, 2048, 2304, True))
                for dt in (mx.float16, mx.bfloat16) for c in (False, True)]
+# 2.64: the NAX dense forward keeps its oracle coverage — (a) the explicit knob (the 2.63
+# route, causal + non-causal), (b) a measured tile-table row (32.32.2 B*H16 N2048, non-causal
+# only: the table is keyed non-causal, so the causal twin is SDPA).
+_CELLS += [("dense_D128_v6knob", DT_NAME[dt], c, "square_N2048", dt, "real",
+            _with_env(_dense_runner(128, 2048, 2048, True), _V6_DENSE_ON))
+           for dt in (mx.float16, mx.bfloat16) for c in (False, True)]
+_CELLS += [("dense_D128_table32322", DT_NAME[dt], c, "BH16_N2048", dt,
+            "sdpa" if c else "real", _with_env(_dense_runner(128, 2048, 2048, True, H=16), {}))
+           for dt in (mx.float16, mx.bfloat16) for c in (False, True)]
 
 
 # -- Decode / split-KV (Nq=1, large S; public M5 path → SDPA) ------------------
@@ -337,10 +371,17 @@ def _bwd_runner(D):
     return run
 
 
-_CELLS += [("backward_D%d" % D, DT_NAME[dt], c, "vjp_N4096", dt, "real",
-            _bwd_runner(D))
+# 2.64: backward D=128 at B*H4 N4096 — non-causal sits in the 32.32.2 B*H4 table rows
+# (fp16 {4096}, bf16 [4096, 4608]) → NAX forward (dq differs through the o-dependent
+# cotangent); causal is SDPA forward + SDPA-vjp (byte-identical).  The 2.63 causal NAX
+# forward + SDPA-vjp keeps its coverage under the knob.
+_CELLS += [("backward_D%d" % D, DT_NAME[dt], c, "vjp_N4096", dt,
+            "sdpa" if (D == 128 and c) else "real", _with_env(_bwd_runner(D), {}))
            for D in (64, 128) for dt in (mx.float16, mx.bfloat16)
            for c in (False, True)]
+_CELLS += [("backward_D128_v6knob", DT_NAME[dt], c, "vjp_N4096", dt, "real",
+            _with_env(_bwd_runner(128), _V6_DENSE_ON))
+           for dt in (mx.float16, mx.bfloat16) for c in (False, True)]
 
 
 # ── Volet G2: dense envelope completion (round-5 CX-05/CC-02 dense half) ───────
@@ -370,12 +411,16 @@ def _gqa_runner(D, N, Hq, Hk):
 _CELLS += [("dense_D256", DT_NAME[dt], c, "square_N2048", dt, "sdpa",
             _dense_runner(256, 2048, 2048, True))
            for dt in (mx.float16, mx.bfloat16) for c in (False, True)]
-# GQA forward (Hq=8, Hk=2): D=64 → SDPA; D=128 N>=2048 → NAX (real)
+# GQA forward (Hq=8, Hk=2): D=64 → SDPA; D=128 → SDPA (2.64 D1; GQA never borrows a
+# table row measured at Hq == Hk) and NAX under the explicit knob
 _CELLS += [("gqa_dense_D64", DT_NAME[dt], c, "Hq8Hk2_N2048", dt, "sdpa",
             _gqa_runner(64, 2048, 8, 2))
            for dt in (mx.float16, mx.bfloat16) for c in (False, True)]
-_CELLS += [("gqa_dense_D128", DT_NAME[dt], c, "Hq8Hk2_N2048", dt, "real",
-            _gqa_runner(128, 2048, 8, 2))
+_CELLS += [("gqa_dense_D128", DT_NAME[dt], c, "Hq8Hk2_N2048", dt, "sdpa",
+            _with_env(_gqa_runner(128, 2048, 8, 2), {}))
+           for dt in (mx.float16, mx.bfloat16) for c in (False, True)]
+_CELLS += [("gqa_dense_D128_v6knob", DT_NAME[dt], c, "Hq8Hk2_N2048", dt, "real",
+            _with_env(_gqa_runner(128, 2048, 8, 2), _V6_DENSE_ON))
            for dt in (mx.float16, mx.bfloat16) for c in (False, True)]
 
 

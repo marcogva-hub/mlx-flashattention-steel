@@ -55,9 +55,32 @@ def _fp32_attn_oracle(q, k, v, causal):
     return o
 
 
-def test_dense_d128_bf16_routes_to_nax():
-    """Dense D=128 auto (N>=2048, above the Tier-2 #1 threshold): bf16 must reach the real NAX
-    matmul2d forward (byteΔ>0 vs SDPA), exactly like fp16. byteΔ==0 ⇒ it silently dropped to SDPA."""
+@pytest.fixture
+def _v6_dense_on(monkeypatch):
+    """2.64 D1: dense D=128 `auto` delegates to SDPA; the NAX dense forward is reached through
+    the explicit MFA_ENABLE_V6_DENSE=1 knob (or a measured tile-table row)."""
+    for k in ("MFA_DISABLE_V6_DENSE", "MFA_V6_DENSE_MIN_N", "MLX_MFA_DISPATCH_TABLE"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("MFA_ENABLE_V6_DENSE", "1")
+
+
+def test_dense_d128_default_is_sdpa_for_both_dtypes(monkeypatch):
+    """2.64 D1, dtype-symmetric: B*H8 has no tile-table row -> fp16 AND bf16 are byte-identical
+    to SDPA (a dtype gate cannot send one of them elsewhere)."""
+    from mlx_mfa import flash_attention
+    for k in ("MFA_ENABLE_V6_DENSE", "MFA_DISABLE_V6_DENSE", "MLX_MFA_DISPATCH_TABLE"):
+        monkeypatch.delenv(k, raising=False)
+    sc = 1.0 / math.sqrt(128)
+    for dt in (mx.float16, mx.bfloat16):
+        q, k, v = _qkv(1, 8, 2048, 128, dt)
+        d = _delta(flash_attention(q, k, v, scale=sc),
+                   mx.fast.scaled_dot_product_attention(q, k, v, scale=sc))
+        assert d == 0.0, f"dense D=128 {dt} default is not SDPA (Δ={d:.2e})"
+
+
+def test_dense_d128_bf16_routes_to_nax(_v6_dense_on):
+    """Under MFA_ENABLE_V6_DENSE=1 (N>=2048): bf16 must reach the real NAX matmul2d forward
+    (byteΔ>0 vs SDPA), exactly like fp16. byteΔ==0 ⇒ it silently dropped to SDPA."""
     from mlx_mfa import flash_attention
     sc = 1.0 / math.sqrt(128)
     for dt in (mx.float16, mx.bfloat16):
@@ -71,13 +94,17 @@ def test_dense_d128_bf16_routes_to_nax():
 
 
 @pytest.mark.parametrize("causal", [False, True])
-def test_dense_d128_bf16_correct_vs_fp32(causal):
+def test_dense_d128_bf16_correct_vs_fp32(causal, _v6_dense_on):
     """Tier-2 #2 axis 3 (correctness): bf16 dense D=128 NAX output is within the bf16 floor of an
     INDEPENDENT fp32 oracle.  Measured worst-case ~1.3e-3 (causal); floor 5e-3 is generous but well
-    inside the bf16 range (<1e-2) and catches a real bf16 correctness regression."""
+    inside the bf16 range (<1e-2) and catches a real bf16 correctness regression.  The binary is
+    asserted too (byteΔ>0 vs SDPA): a green oracle on the SDPA fallback would be vacuous."""
     from mlx_mfa import flash_attention
     q, k, v = _qkv(1, 8, 2048, 128, mx.bfloat16, seed=3)
     o = flash_attention(q, k, v, causal=causal)
+    sd = mx.fast.scaled_dot_product_attention(
+        q, k, v, scale=1.0 / math.sqrt(128), mask=("causal" if causal else None))
+    assert _delta(o, sd) > 0.0, "bf16 dense D=128 under the knob ran SDPA, not NAX"
     err = _delta(o, _fp32_attn_oracle(q, k, v, causal))
     assert err < 5e-3, f"bf16 dense D=128 (causal={causal}) wrong vs fp32 oracle (Δ={err:.2e})"
 
