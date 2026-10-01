@@ -1,7 +1,7 @@
 {
  "release_version": "2.64.0",
- "sdist_sha256": "87af9626c17482cb8cae37040d83520fef6516e50a44d2a5e329de3a618ee086",
- "git_sha": "be34ec7abf90702a771589cf5cd2d7a522c1ce8b",
+ "sdist_sha256": "eb9641039a6e1c82450b943bb2b3254bf996a36457e0d1027e3ab1bd51dae8c5",
+ "git_sha": "ef1d0a40e234ad63b6c224a4cfd23371008d4989",
  "date_utc": "2026-10-01",
  "device": "Apple M5 Max",
  "abi_table_versions": [
@@ -107,7 +107,7 @@
      "detail": "4/4 cells ok"
     }
    },
-   "seconds": 14.4
+   "seconds": 16.7
   },
   "0.32.0": {
    "mlx": "0.32.0",
@@ -183,7 +183,7 @@
      "detail": "4/4 cells ok"
     }
    },
-   "seconds": 14.6
+   "seconds": 15.2
   },
   "0.32.1": {
    "mlx": "0.32.1",
@@ -259,7 +259,7 @@
      "detail": "4/4 cells ok"
     }
    },
-   "seconds": 14.7
+   "seconds": 16.1
   },
   "0.32.2": {
    "mlx": "0.32.2",
@@ -335,9 +335,9 @@
      "detail": "4/4 cells ok"
     }
    },
-   "seconds": 14.3
+   "seconds": 15.8
   }
  },
- "matrix_sha256": "0ef5ff34b0452a53b0cfc9dacdede43c5b3129eb62cfd520c4e1fe9c9a27b4ab",
+ "matrix_sha256": "7eacfb37ce8f72f0a10f61fea5ff94be4ef1be8049fa745866ca696834da8b34",
  "all_pass": true
 }
