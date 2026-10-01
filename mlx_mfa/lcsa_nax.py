@@ -277,7 +277,7 @@ def sparse_attention_nax_with_lse(
 #
 # Routing logic:
 #   density < density_threshold:  sparse_attention_nax (NAX kernel, LCSA path)
-#   density >= density_threshold: SDPA + expanded float bias
+#   density >= density_threshold: SDPA + bool keep-mask (2.64; was an expanded float bias)
 #
 # Historical note: the original public aliases were V1 (per-thread FA-2) and V2
 # (cooperative-tensor).  They are now treated as scalar_fallback / v6nax_sparse
@@ -364,22 +364,23 @@ SPARSE_NAX_CAUSAL_BH4_DENSITY_CEILING = 0.10
 SPARSE_NAX_KERNEL_BLOCK_TILE = 32                   # V6NAX sparse BQ=BK is structurally pinned at 32
 SPARSE_NAX_EXPANDABLE_BLOCK_TILE = 64               # One BT64 block maps exactly to 2x2 BT32 blocks
 
-# Volet A Phase 1 (spec §1, item 4): at/above this block density the skip's
-# per-block loop-control overhead outweighs its shrinking skip benefit, so the
-# wrapper diverts to the dense masked route. This dispatch — NOT anything in the
-# kernel — is what buys the "<=5% overhead at ~zero sparsity" gate (gate 7).
-# Initial 0.85, to be calibrated by the d=0.95 measurement cell; override via
-# MFA_SPARSE_D_DENSE_CUTOFF.
+# Near-dense threshold.  Volet A (2.63) diverted density >= this value to the dense
+# masked route.  2.64 B6 (D2): at/above it the best measured arm is the V6NAX kernel
+# whenever it can serve the call (~= dense SDPA at d 0.999, faster than the masked
+# fallback — FlashVSR shapes), else SDPA + a bool keep-mask; between the density
+# ceiling and this cutoff the masked SDPA fallback runs.  Override via
+# MFA_SPARSE_D_DENSE_CUTOFF (> 1 disables the near-dense route).
 SPARSE_NAX_D_DENSE_CUTOFF = 0.85
 
 
 def _d_dense_cutoff() -> float:
-    """spec §1 item 4 — block density at/above which sparse routing diverts to
-    the dense masked path (env override: MFA_SPARSE_D_DENSE_CUTOFF).
+    """Block density at/above which sparse routing takes the near-dense rule
+    (2.64 B6: the V6NAX kernel when it can serve the call, else SDPA + bool mask;
+    env override: MFA_SPARSE_D_DENSE_CUTOFF).
 
     RC 2.63.0 (decision D2): an invalid value is REFUSED (it silently fell back to
-    0.85, and accepted nan — disabling the cutoff — or a negative value — sending
-    everything dense).  Valid: a finite number > 0; > 1 disables the diversion.
+    0.85, and accepted nan or a negative value).  Valid: a finite number > 0; > 1
+    disables the near-dense route.
     """
     raw = os.environ.get("MFA_SPARSE_D_DENSE_CUTOFF")
     if raw is None:
@@ -391,7 +392,7 @@ def _d_dense_cutoff() -> float:
     if not math.isfinite(val) or val <= 0.0:
         raise ValueError(
             f"[mlx-mfa] MFA_SPARSE_D_DENSE_CUTOFF must be a finite block density > 0 "
-            f"(> 1 disables the dense diversion); got {raw!r}.")
+            f"(> 1 disables the near-dense route); got {raw!r}.")
     return val
 
 
@@ -584,6 +585,12 @@ def _route_viable_263(Q, K, density, *, causal=False) -> bool:
     return False
 
 
+def v6nax_kernel_selected(qL: int, kL: int, D: int) -> bool:
+    """True unless MFA_LCSA_KERNEL_VERSION (or the head dim) selects the scalar kernel —
+    the same rule the law and auto_pad routes honour (review M4)."""
+    return decide_auto_version(density=0.0, qL=qL, kL=kL, D=D) == "v2"
+
+
 def _quasi_dense_nax_viable(Q, K, V, block_mask, block_tile, causal) -> bool:
     """2.64 B6 (D2): at density >= D_DENSE_CUTOFF the best measured arm is the V6NAX
     kernel (0.42x of the 2.63 path on the FlashVSR shapes; ~= dense SDPA at d 0.999)
@@ -593,6 +600,8 @@ def _quasi_dense_nax_viable(Q, K, V, block_mask, block_tile, causal) -> bool:
         return False
     qL, kL = int(Q.shape[2]), int(K.shape[2])
     if not (SPARSE_NAX_MIN_N <= min(qL, kL) and max(qL, kL) <= SPARSE_NAX_MAX_N):
+        return False
+    if not v6nax_kernel_selected(qL, kL, int(Q.shape[3])):   # MFA_LCSA_KERNEL_VERSION
         return False
     from mlx_mfa.attention import _nax_sparse_capacity_ok
     return _nax_sparse_capacity_ok(Q, K, V, block_mask, causal)
@@ -676,7 +685,7 @@ def sparse_attention_dispatch(
     """Shape-gated sparse attention dispatcher.
 
     Routes to V6NAX only inside `_nax_sparse_route_viable`; all other cells use
-    MLX SDPA with an expanded float bias. `density_threshold` is retained as a
+    MLX SDPA with a bool keep-mask (2.64 B2; was an expanded float bias). `density_threshold` is retained as a
     backwards-compatible, further-restrict-only ceiling inside that envelope.
 
     Args:
@@ -766,13 +775,19 @@ def sparse_attention_dispatch(
     # This removes the BT=16 ~5.5× mis-route footgun: routing correctness no longer
     # depends on a caller hand-tuning the density threshold. density_threshold is
     # retained as a secondary (further-restrict-only) tunable within the window.
-    _route = ((not _force_sdpa) and not _small_mask
+    from mlx_mfa.attention import (
+        _get_is_m5_plus_cached, _nax_mask_lead_ok, _nax_scale_ok)
+    # 2.64 review M2/M3/L1: the V6NAX kernel needs M5+ (NAX), a finite positive scale
+    # and directly-indexed mask leading dims — the law widened this route, so check them.
+    _kernel_ok = (_get_is_m5_plus_cached() and _nax_scale_ok(scale)
+                  and _nax_mask_lead_ok(block_mask, int(Q.shape[0]), int(Q.shape[1])))
+    _route = ((not _force_sdpa) and not _small_mask and _kernel_ok
               and _nax_sparse_route_viable(Q, K, block_tile, density, causal=causal, V=V)
               and density < density_threshold
               and density < _d_dense_cutoff())
     # 2.64 B6 (D2): at/above the dense cutoff the V6NAX kernel is the best measured arm
     # whenever it can serve the call (same rule as flash_attention_sparse).
-    if (not _route and not _force_sdpa and not _small_mask
+    if (not _route and not _force_sdpa and not _small_mask and _kernel_ok
             and density >= _d_dense_cutoff() and density < density_threshold
             and _quasi_dense_nax_viable(Q, K, V, block_mask, block_tile, causal)):
         _route = True
@@ -789,11 +804,26 @@ def sparse_attention_dispatch(
     # zeros), decided per element row; the causal rule is the canonical zero-clamped
     # one (NAMING.md; review DSP-12).
     from mlx_mfa import _dispatch_trace as _dtrace
+    from mlx_mfa.attention import (
+        _nax_sparse_capacity_ok, _sparse_fallback_mask_bytes, _sparse_fallback_max_bytes,
+        _sparse_keep_mask, _sparse_sdpa_rows)
 
-    _dtrace.record("sdpa", "extended: mask < 4096 B (below the V6NAX minimum) -> dense"
-                   if _small_mask else "sparse_attention_dispatch outside hardened gate")
     qL = Q.shape[2]
     kL = K.shape[2]
+    if precomputed_bias is None:
+        # 2.64 B1 (review M1): same rescue as flash_attention_sparse — an oversize
+        # keep-mask goes to the V6NAX kernel when it can serve the call (it records its
+        # own terminal), else the guard in _sparse_keep_mask raises below.
+        _need = _sparse_fallback_mask_bytes(
+            block_mask.shape, block_mask.shape[-2] * block_tile, block_mask.shape[-1] * block_tile)
+        if (_need > _sparse_fallback_max_bytes() and not _force_sdpa and _kernel_ok
+                and block_tile == SPARSE_NAX_KERNEL_BLOCK_TILE
+                and v6nax_kernel_selected(qL, kL, int(Q.shape[3]))
+                and _nax_sparse_capacity_ok(Q, K, V, block_mask, causal)):
+            return sparse_attention_nax(Q, K, V, block_mask, block_tile=block_tile,
+                                        scale=scale, causal=causal)
+    _dtrace.record("sdpa", "mask < 4096 B (below the V6NAX minimum) -> dense"
+                   if _small_mask else "sparse_attention_dispatch outside the 2.64 law")
     if precomputed_bias is not None:
         bias = precomputed_bias
         if causal:
@@ -806,7 +836,6 @@ def sparse_attention_dispatch(
         out = mx.fast.scaled_dot_product_attention(Q, K, V, scale=scale, mask=bias)
         row_active = (mx.max(bias, axis=-1, keepdims=True) >= 0)   # unchanged 2.63 rule
         return mx.where(row_active, out, mx.zeros_like(out))
-    from mlx_mfa.attention import _sparse_keep_mask, _sparse_sdpa_rows
     # Same geometry as the former _bool_mask_to_float_bias: block_tile on both axes,
     # no trimming (a non-aligned length raises in SDPA exactly as before).
     keep, row_active = _sparse_keep_mask(

@@ -27,14 +27,18 @@ A and B, and a re-measurement of the DAY-3 tile bands against the new default
   N=8192). The causal policy is unchanged. 64-token masks are expanded exactly to 32-token
   masks before `auto_pad`, so non-aligned LongCat BSA / VSA masks reach the padded kernel.
   `MFA_SPARSE_NAX_LEGACY_POLICY=1` restores the complete 2.63 policy for this release.
+  **Narrowing for 2.63 opt-in users:** `MFA_SPARSE_NAX_EXTENDED=1` (and `sla_attention` on M5,
+  which turned it on by default) had no density ceiling below the cutoff and no N bounds. In
+  2.64 the ceilings are kept, so block density between 0.30 and 0.85 (e.g. `sla_attention`
+  with `topk_ratio` 0.5) now runs the SDPA fallback where 2.63 ran the V6NAX kernel.
 - **Non-causal `qL ≠ kL`** sparse calls take the V6NAX kernel (the kernel documents rectangular
   non-causal; exact on the FlashVSR shapes 2048×8192 and 2560×10240). Causal `qL ≠ kL` stays
   refused.
 - **Near-dense masks** (block density ≥ `MFA_SPARSE_D_DENSE_CUTOFF`, 0.85) take the V6NAX kernel
   whenever it can serve the call; 2.63 sent them to the dense masked route.
 - **Sparse SDPA fallbacks and SDPA-vjp backward legs use a bool keep-mask**, never a float bias.
-  Byte-identical to the 2.63 operator on every query row with at least one visible key (outputs and
-  gradients, fp16/bf16, causal, per-head), with half to a quarter of the mask memory and no -inf
+  Byte-identical to the 2.63 operator on every query row with at least one visible key (outputs
+  locked fp16/bf16 × causal × per-head; gradients locked fp16, 2-D masks), with half to a quarter of the mask memory and no -inf
   buffers. One row class changes: a query row with no visible key inside a causally reachable
   block now returns zeros, the documented empty-row contract; 2.63's per-head forward returned NaN
   there. A caller-supplied `precomputed_bias` stays float.
@@ -50,26 +54,33 @@ A and B, and a re-measurement of the DAY-3 tile bands against the new default
   fails is visible and rejected: 128·32·8, which beat NAX's old default tile but loses to SDPA.
 - On-device calibration of tile **priors** (never defaults): `calibrate_dispatch(…,
   calibrate_dense_tiles=True)` measures `DENSE_TILE_PRIORS` against SDPA and writes only rows that
-  pass the same guard to `dense_nax_tiles`; `MLX_MFA_DISPATCH_TABLE` activates them, and a row
-  outside every prior or failing its guard is refused.
+  pass the same guard to `dense_nax_tiles`; `MLX_MFA_DISPATCH_TABLE` activates them. A missing or
+  malformed table file, a row outside every prior, or a row failing its guard raises a `ValueError`
+  naming the path. The two D=64 priors (64·32·4) are registered but not routable in 2.64: the D=64
+  backward route owns the D=64 forward. They are not calibrated.
 - `_ext.v6_nax_forward(…, nax_bq, nax_bk, nax_wm)`: an explicit, atomic NAX tile triple per call
   (source, pipeline key and grid), replacing env reads at lazy-eval time for public routes.
 - Knobs: `MFA_ENABLE_V6_DENSE`, `MFA_SPARSE_FALLBACK_MAX_BYTES` (default 4 GiB),
   `MFA_SPARSE_NAX_LEGACY_POLICY`.
-- **Sparse fallback size guard**: a fallback mask above `MFA_SPARSE_FALLBACK_MAX_BYTES` is never
-  allocated. The call goes to the V6NAX kernel when it can serve it (aligned, or `auto_pad` for
+- **Sparse fallback size guard** (forward fallbacks of both entry points; the SDPA-vjp backward
+  is not guarded): a fallback mask above `MFA_SPARSE_FALLBACK_MAX_BYTES` is never allocated. The call goes to the V6NAX kernel when it can serve it (aligned, or `auto_pad` for
   square non-aligned calls), else it raises. The 2.63 default would have built a float bias of
   about 1.8 TB for LongCat stage 3 (N=168 960, 32 heads).
 - `lcsa_nax.mask_density`: exact block density without a float32 copy of the mask.
 - M5 release gate: 12 production-shape delegation fingerprints (`auto` ≡ SDPA, byte-identical), a
-  tile-table cell, and a FlashVSR rectangular near-dense engagement cell.
+  tile-table cell, and a rectangular near-dense engagement cell at the FlashVSR call shape (with
+  a 32×32 window mask — FlashVSR's own 32×16 masks still take the SDPA fallback).
 - README "When a Metal kernel engages on M5 (2.64)", locked to the code constants
   (`tests/test_264_doc_code_lock.py`).
 
 ### Fixed
 - Sparse routing no longer materialises a float32 copy of the per-head mask to compute its
   density (five sites). Aligned LongCat stage-3 sparse peak memory went from 4.7 GB to 2.2 GB.
-- The two STEEL-geometry sparse fallbacks (M5; D=128 on M3+) now record their dispatch terminal.
+- The two STEEL-geometry sparse fallbacks (M5; D=128 on M3+) now record their dispatch terminal,
+  and a call the size guard rescues logs only the terminal that ran.
+- The sparse NAX routes now check what the kernel requires before routing: M5+ (the
+  dispatcher's route had no device check), a finite positive scale, and mask leading
+  dims the kernel indexes directly. Other calls stay on SDPA.
 - Benches no longer model a non-existent CogVideoX shape (H30 D128 N70200): CogVideoX1.5 is
   H48 D64 (SparkVSR N4582, Vivid-VR B2 N65762).
 

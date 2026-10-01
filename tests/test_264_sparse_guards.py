@@ -186,3 +186,125 @@ def test_oversize_rescue_judges_the_callers_mask_geometry(monkeypatch):
     assert term[0] == "v6nax_sparse" and "kv_valid_len" in term[1], term
     ref = mx.fast.scaled_dot_product_attention(q, k, v, scale=1 / math.sqrt(128))
     assert float(mx.max(mx.abs(o.astype(mx.float32) - ref.astype(mx.float32))).item()) < 1e-2
+
+
+# ── 2.64 pre-merge review fixes ──────────────────────────────────────────────────
+def _ref_masked(q, k, v, m32, causal=False, scale=None):
+    """SDPA over the element-level operator (bool keep, empty rows -> 0) — independent ref."""
+    N, S = q.shape[2], k.shape[2]
+    keep = mx.repeat(mx.repeat(m32.astype(mx.bool_), 32, axis=-2), 32, axis=-1)[..., :N, :S]
+    if causal:
+        keep = keep & (mx.arange(S)[None, :] <= mx.arange(N)[:, None] + max(0, S - N))
+    act = mx.any(keep, axis=-1, keepdims=True)
+    keep = keep | ~act
+    sc = 1.0 / math.sqrt(q.shape[-1]) if scale is None else scale
+    o = mx.fast.scaled_dot_product_attention(q, k, v, scale=sc, mask=keep)
+    return mx.where(act, o, mx.zeros_like(o))
+
+
+@nax
+@pytest.mark.parametrize("scale", [0.0, -0.088, float("inf")])
+def test_non_positive_or_non_finite_scale_stays_on_sdpa(monkeypatch, scale):
+    """Review M2: the V6NAX kernel refuses such scales; the routes must not send them."""
+    q, k, v = _qkv(1, 4, 4096)
+    nb = 4096 // 32
+    for m in (mx.ones((nb, nb), dtype=mx.bool_),                       # B6 (d=1.0)
+              (mx.arange(nb)[:, None] - mx.arange(nb)[None, :]) % 40 == 0):  # law (d≈0.025)
+        with dt.capture() as tr:
+            o = flash_attention_sparse(q, k, v, m, scale=scale)
+            mx.eval(o)
+        own = [t for t in tr if not t[1].startswith(dt.REENTRANT_PREFIX)]
+        assert own[-1][0] == "sdpa", own
+
+
+@nax
+def test_dispatcher_rescues_an_oversize_mask(monkeypatch):
+    """Review M1: sparse_attention_dispatch had no B1 rescue (flash_attention_sparse did)."""
+    from mlx_mfa.lcsa_nax import sparse_attention_dispatch
+    monkeypatch.setenv("MFA_SPARSE_FALLBACK_MAX_BYTES", str(2**20))
+    q, k, v = _qkv(1, 4, 4096)
+    nb = 4096 // 32
+    m = mx.ones((nb, nb), dtype=mx.bool_) & (mx.arange(nb)[None, :] <= mx.arange(nb)[:, None])
+    with dt.capture() as tr:                     # causal: outside the causal cells -> fallback path
+        o = sparse_attention_dispatch(q, k, v, m, block_tile=32, causal=True)
+        mx.eval(o)
+    own = [t for t in tr if not t[1].startswith(dt.REENTRANT_PREFIX)]
+    assert own[-1][0] == "v6nax_sparse", own
+    ref = _ref_masked(q, k, v, m, causal=True)
+    assert float(mx.max(mx.abs(o.astype(mx.float32) - ref.astype(mx.float32))).item()) < 1e-2
+
+
+def test_dispatcher_never_routes_nax_off_m5(monkeypatch):
+    """Review M3: the dispatcher's NAX route is M5-gated (the law widened it)."""
+    import mlx_mfa.attention as att
+    from mlx_mfa.lcsa_nax import sparse_attention_dispatch
+    monkeypatch.setattr(att, "_get_is_m5_plus_cached", lambda: False)
+    q, k, v = _qkv(1, 12, 4096)
+    nb = 4096 // 32
+    m = (mx.arange(nb)[:, None] - mx.arange(nb)[None, :]) % 10 == 0
+    with dt.capture() as tr:
+        mx.eval(sparse_attention_dispatch(q, k, v, m, block_tile=32))
+    assert not any(t[0] == "v6nax_sparse" for t in tr), tr
+
+
+@nax
+def test_broadcast_shaped_mask_takes_sdpa(monkeypatch):
+    """Review L1: a [1, NQ, NK] mask at H=12 broadcasts on SDPA; the kernel cannot index it."""
+    q, k, v = _qkv(1, 12, 4096)
+    nb = 4096 // 32
+    m = ((mx.arange(nb)[:, None] - mx.arange(nb)[None, :]) % 10 == 0)[None]
+    with dt.capture() as tr:
+        o = flash_attention_sparse(q, k, v, m)
+        mx.eval(o)
+    own = [t for t in tr if not t[1].startswith(dt.REENTRANT_PREFIX)]
+    assert own[-1][0] == "sdpa", own
+    assert bool(mx.array_equal(o, _ref_masked(q, k, v, m)))
+
+
+@nax
+def test_rescued_call_logs_one_terminal(monkeypatch, capsys):
+    """Review L3: a rescued call printed 'terminal=sdpa' then 'terminal=v6nax_sparse'."""
+    from mlx_mfa import dispatch_policy
+    monkeypatch.setenv("MFA_SPARSE_FALLBACK_MAX_BYTES", str(2**20))
+    monkeypatch.setenv("MFA_SPARSE_NAX_LEGACY_POLICY", "1")         # policy -> fallback -> rescue
+    q, k, v = _qkv(1, 4, 2048)
+    m32 = mx.ones((2048 // 32, 2048 // 32), dtype=mx.bool_)
+    dispatch_policy._set_verbose(True)
+    try:
+        capsys.readouterr()
+        mx.eval(flash_attention_sparse(q, k, v, m32))
+        lines = [l for l in capsys.readouterr().out.splitlines() if "terminal=" in l]
+    finally:
+        dispatch_policy._set_verbose(False)
+    assert len(lines) == 1, lines
+
+
+@nax
+@pytest.mark.parametrize("case", ["rect_law", "quasi_dense", "rescue"])
+def test_gradients_through_the_new_routes(monkeypatch, case):
+    """Review M2 (tests): B5 rectangular, B6 quasi-dense and the B1 rescue run the SDPA-vjp
+    backward of the SAME operator — gradients match an independent reference, and the
+    backward is not size-guarded (the forward rescue at 1 MiB must still train)."""
+    if case == "rescue":
+        monkeypatch.setenv("MFA_SPARSE_FALLBACK_MAX_BYTES", str(2**20))
+        monkeypatch.setenv("MFA_SPARSE_NAX_LEGACY_POLICY", "1")
+    Nq, Nk = (2048, 8192) if case == "rect_law" else (2048, 2048)
+    q, k, v = _qkv(1, 4, Nq, S=Nk)
+    nq, nk = Nq // 32, Nk // 32
+    if case == "rect_law":
+        m = (mx.arange(nq)[:, None] - mx.arange(nk)[None, :]) % 10 == 0
+    else:
+        m = mx.ones((nq, nk), dtype=mx.bool_)
+        m = mx.concatenate([m[:, :-1], mx.zeros((nq, 1), dtype=mx.bool_)], axis=-1)
+    g = mx.random.normal(q.shape).astype(mx.float32)
+
+    def L(fn):
+        return lambda a, b, c: (fn(a, b, c).astype(mx.float32) * g).sum()
+    with dt.capture() as tr:
+        got = mx.grad(L(lambda a, b, c: flash_attention_sparse(a, b, c, m)), argnums=(0, 1, 2))(q, k, v)
+        mx.eval(*got)
+    assert any(t[0] == "v6nax_sparse" for t in tr), tr
+    ref = mx.grad(L(lambda a, b, c: _ref_masked(a, b, c, m)), argnums=(0, 1, 2))(q, k, v)
+    mx.eval(*ref)
+    for a, b in zip(got, ref):
+        assert bool(mx.array_equal(a, b)), float(mx.max(mx.abs(a.astype(mx.float32) - b.astype(mx.float32))).item())

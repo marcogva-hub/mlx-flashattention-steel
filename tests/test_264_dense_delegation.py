@@ -235,3 +235,20 @@ def test_gqa_never_borrows_a_table_row(monkeypatch):
     o, term = _auto(q, k, v)
     assert term[0] == "sdpa", term
     assert bool(mx.array_equal(o, _sdpa(q, k, v)))
+
+
+@pytest.mark.parametrize("N", [3000, 2049])
+def test_table_row_at_non_aligned_n_is_correct(monkeypatch, N):
+    """Review gap: a table hit at an N that is not a multiple of 32 (ragged last Q tile)."""
+    _clear_dense_env(monkeypatch)
+    from tests.sparse_gates import row_gate_report
+    q, k, v = _qkv(2, 8, N)
+    o, term = _auto(q, k, v)
+    assert term[0] == "nax_dense" and "32.32.2" in term[1], term
+    rows = mx.array([0, N // 2, N - 1])
+    with mx.stream(mx.cpu):
+        qf, kf, vf = (x.astype(mx.float32) for x in (q, k, v))
+        ref = mx.softmax((qf[:, :, rows] @ kf.transpose(0, 1, 3, 2)) / math.sqrt(128), axis=-1) @ vf
+        mx.eval(ref)
+    rep = row_gate_report(o[:, :, rows].astype(mx.float32).reshape(-1, 3, 128), ref.reshape(-1, 3, 128))
+    assert rep["finite"] and rep["worst_row_rel"] < 1e-2 and rep["worst_row_norm_dev"] < 5e-3, rep

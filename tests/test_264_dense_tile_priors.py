@@ -115,3 +115,37 @@ def test_calibration_smoke_emits_only_guarded_rows(tmp_path, monkeypatch):
     if rows:
         monkeypatch.setenv("MLX_MFA_DISPATCH_TABLE", _write_table(tmp_path, rows))
         assert len(dp._load_calibrated_tiles()) == 1
+
+
+# ── review M2 / M3 / H1: the loader refuses loudly, with the path ────────────────
+def test_zero_floor_row_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setenv("MLX_MFA_DISPATCH_TABLE", _write_table(tmp_path, [_row(floor=0.0)]))
+    with pytest.raises(ValueError, match="guard"):
+        dp._load_calibrated_tiles()
+
+
+def test_missing_table_file_raises_with_its_path(tmp_path, monkeypatch):
+    missing = str(tmp_path / "nope.json")
+    monkeypatch.setenv("MLX_MFA_DISPATCH_TABLE", missing)
+    with pytest.raises(ValueError, match="nope.json"):
+        dp._load_calibrated_tiles()
+
+
+def test_malformed_table_raises_with_its_path(tmp_path, monkeypatch):
+    p = tmp_path / "broken.json"
+    p.write_text('{"dense_nax_tiles": [{"D": 128}]')                 # truncated JSON
+    monkeypatch.setenv("MLX_MFA_DISPATCH_TABLE", str(p))
+    with pytest.raises(ValueError, match="broken.json"):
+        dp._load_calibrated_tiles()
+
+
+def test_d64_rows_are_not_routable_in_264(tmp_path, monkeypatch):
+    """H1: the D=64 priors are registered but not routable (the D64 V6 backward carve-out
+    owns the D=64 forward) — a D=64 row in dense_nax_tiles is refused, not silently unused."""
+    assert all(p.D == 128 for p in dp.DENSE_TILE_PRIORS)
+    assert all(p.D == 64 for p in dp.DENSE_TILE_PRIORS_UNROUTED)
+    row = _row(D=64, bh=12, n_lo=13312, n_hi=17408, tile=[64, 32, 4],
+               evidence=[[13312, 0.03], [17408, 0.03]])
+    monkeypatch.setenv("MLX_MFA_DISPATCH_TABLE", _write_table(tmp_path, [row]))
+    with pytest.raises(ValueError, match="outside every"):
+        dp._load_calibrated_tiles()

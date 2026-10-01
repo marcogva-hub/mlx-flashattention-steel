@@ -84,6 +84,7 @@ def test_autopad_aligned_byte_identical():
     assert delta == 0.0, f"auto_pad no-op on aligned N must be byte-identical; maxabs={delta}"
 
 
+@m5only
 @pytest.mark.parametrize("causal", [False, True])
 def test_autopad_nonaligned_gold(monkeypatch, causal):
     """Gate 4b / §2(b): non-aligned N via auto_pad vs fp32 SDPA+element-mask, per-row gates.
@@ -190,6 +191,7 @@ def test_refusal_pre_m5_extended(monkeypatch):
         sla.sla_attention(q, k, v, topk_ratio=0.1, extended=True)
 
 
+@m5only
 def test_refusal_D256_extended(monkeypatch):
     """2.64: D=256 is no longer refused by the (retired) opt-in; the default path serves it
     on the SDPA route (V6NAX sparse is D in {64, 128})."""
@@ -202,6 +204,7 @@ def test_refusal_D256_extended(monkeypatch):
     assert bool(mx.all(mx.isfinite(o)).item())
 
 
+@m5only
 def test_refusal_bt_not_32_extended(monkeypatch):
     """2.64: a BT=16 mask is no longer refused by the (retired) opt-in — it takes the
     default route (the tile is not NAX-viable -> SDPA fallback)."""

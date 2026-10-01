@@ -85,7 +85,10 @@ def test_u1_extended_pad_keys_out_of_denominator(monkeypatch, N, D, H, causal):
     with dt.capture() as cap:
         op = flash_attention_sparse(q, k, v, bm, causal=causal, auto_pad=True)
         mx.eval(op)
-    if _padded_route_ran(cap):
+    from mlx_mfa.attention import _auto_pad_nax_route
+    routed = _auto_pad_nax_route(q, k, v, bm, causal)       # the law, as the router applies it
+    assert _padded_route_ran(cap) == routed, ([r[:2] for r in cap], routed)
+    if routed:
         assert bool(mx.array_equal(op, o)), "public padded route != the padded kernel"
     assert_row_gates(op, ref, **F16_GATES, label=f"public N={N} D={D} H={H} causal={causal}")
 
@@ -216,7 +219,7 @@ def test_extended_refusal_reads_ceil_counts(monkeypatch, N, S):
     ref = _oracle(q, k, v, bm, False)
     assert_row_gates(flash_attention_sparse(q, k, v, bm, auto_pad=True), ref, **F16_GATES)
     bm16 = mx.ones((-(-N // 16), -(-S // 16)), dtype=mx.bool_)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="accepted geometry"):
         flash_attention_sparse(q, k, v, bm16)
 
 

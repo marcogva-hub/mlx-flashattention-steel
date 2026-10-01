@@ -265,7 +265,9 @@ def dense_tile_row_passes_guard(row: DenseTileRow,
     """The 2x-floor guard: both band edges measured, every in-band point >= factor*floor."""
     measured = {n for n, _ in row.evidence}
     inband = [m for n, m in row.evidence if row.n_lo <= n <= row.n_hi]
-    return (row.n_lo in measured and row.n_hi in measured and bool(inband)
+    # A floor of 0 (or negative) would admit parity: a measured floor is always > 0.
+    return (0.0 < row.floor < 1.0
+            and row.n_lo in measured and row.n_hi in measured and bool(inband)
             and all(m >= factor * row.floor for m in inband))
 
 
@@ -305,6 +307,12 @@ DENSE_TILE_PRIORS: tuple = (
     *(DenseTileRow(128, dt_, bh, 6144, 8192, (32, 32, 2), 0.0, (), "DAY-3 second zone")
       for dt_ in ("float16", "bfloat16") for bh in (4, 12, 16)),
     DenseTileRow(128, "float16", 12, 24064, 32768, (128, 32, 8), 0.0, (), "DAY-3 run B"),
+)
+# Registered but NOT routable in 2.64 (review H1): the dense selector serves D=128 only,
+# and at D=64 N >= 2048 the V6 split-backward carve-out owns the forward (Apple SDPA +
+# V6 backward).  Routing a D=64 tile row needs that path reworked — deferred, so these
+# are neither calibrated (no wasted wall time) nor accepted in `dense_nax_tiles`.
+DENSE_TILE_PRIORS_UNROUTED: tuple = (
     DenseTileRow(64, "bfloat16", 12, 13312, 17408, (64, 32, 4), 0.0, (), "DAY-3 run B"),
     DenseTileRow(64, "float16", 12, 11776, 16384, (64, 32, 4), 0.0, (), "DAY-3 run B"),
 )
@@ -330,8 +338,10 @@ def _inside_prior(row: DenseTileRow) -> bool:
 def _load_calibrated_tiles() -> tuple:
     """``dense_nax_tiles`` rows of the MLX_MFA_DISPATCH_TABLE file (path+mtime cached).
 
-    Rule 8: a row outside every prior, or one whose own evidence fails the 2x-floor
-    guard, is a corrupted / hand-edited table — refused loudly, never applied."""
+    Rule 8 (review M2): the variable is an explicit opt-in, so EVERY failure raises a
+    ValueError naming the path — a missing file, an unreadable/malformed table, a row
+    outside every routable prior, or a row whose own evidence fails the 2x-floor guard
+    (incl. a non-positive floor).  Never applied, never silently dropped."""
     global _calibrated_tiles, _calibrated_tiles_key
     path = os.environ.get("MLX_MFA_DISPATCH_TABLE", "")
     mtime = None
@@ -343,10 +353,20 @@ def _load_calibrated_tiles() -> tuple:
     if (path, mtime) == _calibrated_tiles_key:
         return _calibrated_tiles
     rows: tuple = ()
-    if path and mtime is not None:
-        with open(path) as fh:
-            data = json.load(fh)
-        parsed = tuple(_row_from_json(e) for e in data.get("dense_nax_tiles", []))
+    if path and mtime is None:
+        raise ValueError(
+            f"MLX_MFA_DISPATCH_TABLE={path!r}: file not found — unset the variable or "
+            f"point it at a calibrate_dispatch() table (a calibrated row would be silently "
+            f"dropped otherwise)")
+    if path:
+        try:
+            with open(path) as fh:
+                data = json.load(fh)
+            parsed = tuple(_row_from_json(e) for e in data.get("dense_nax_tiles", []))
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise ValueError(
+                f"MLX_MFA_DISPATCH_TABLE={path!r}: unreadable dense_nax_tiles "
+                f"({type(exc).__name__}: {exc})") from exc
         for r in parsed:
             if not _inside_prior(r):
                 raise ValueError(

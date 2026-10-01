@@ -249,3 +249,17 @@ def test_bt64_mask_at_non_aligned_n_reaches_the_padded_kernel(N, H):
     assert term[0] == "v6nax_sparse" and "auto_pad" in term[1], term
     m32 = mx.repeat(mx.repeat(m64, 2, axis=-2), 2, axis=-1)[..., :-(-N // 32), :-(-N // 32)]
     _oracle_gate(o, q, k, v, m32)
+
+
+@nax
+def test_quasi_dense_and_rescue_honour_the_scalar_kernel_override(monkeypatch):
+    """Review M4: MFA_LCSA_KERNEL_VERSION=v1 (scalar) is honoured by the law and auto_pad
+    routes; the B6 quasi-dense and B1 rescue direct routes must honour it too."""
+    monkeypatch.setenv("MFA_LCSA_KERNEL_VERSION", "v1")
+    q, k, v = _qkv(1, 12, 2048, S=8192)
+    m = _window_mask(12, 1, 4, 16)                       # d 0.999 >= cutoff
+    _, term = _run(q, k, v, m)
+    assert term[0] != "v6nax_sparse", term
+    monkeypatch.setenv("MFA_SPARSE_FALLBACK_MAX_BYTES", str(2**20))
+    with pytest.raises(RuntimeError, match="MFA_SPARSE_FALLBACK_MAX_BYTES"):
+        mx.eval(flash_attention_sparse(q, k, v, m))

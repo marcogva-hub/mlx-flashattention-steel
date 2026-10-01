@@ -30,7 +30,7 @@ load-time-only.
 | `MFA_DISABLE_GNA_NATIVE` | bool, `0` | Send public GNA calls to the non-native fallback path. |
 | `MFA_DISABLE_ROPE_NAX` | bool, `0` | Disable the fused RoPE NAX experiment. |
 | `MFA_DISABLE_V6_DENSE` | bool, `0` | Never select the dense V6 NAX forward: D=128 dense `auto` is SDPA everywhere, tile-table rows included. Wins over `MFA_ENABLE_V6_DENSE`. |
-| `MFA_ENABLE_V6_DENSE` | bool, `0` | **2.64:** explicit dense D=128 V6 NAX forward (the 2.63 `auto` route, default tile) at N >= `MFA_V6_DENSE_MIN_N` (2048). Off, D=128 dense `auto` delegates to SDPA byte-identically except the measured tile-table rows (`dispatch_policy.DENSE_TILE_TABLE`). |
+| `MFA_ENABLE_V6_DENSE` | bool, `0` | **2.64:** explicit dense D=128 V6 NAX forward (the 2.63 `auto` route, default tile) at N >= `MFA_V6_DENSE_MIN_N` (2048). Off, D=128 dense `auto` delegates to SDPA byte-identically except the measured tile-table rows (`dispatch_policy.DENSE_TILE_TABLE`). On, it takes precedence over the table (default tile everywhere at N >= the threshold). |
 | `MFA_DISABLE_V6_BACKWARD` | bool, `0` | Disable default D64 V6 backward selection. |
 | `MFA_ENABLE_V6_BACKWARD` | bool, `0` | Allow the D128 V6 backward research envelope. |
 | `MFA_V6_BWD_SPARSE_NATIVE` | bool, `0` | Request the full-native sparse backward orchestration. |
@@ -38,18 +38,18 @@ load-time-only.
 | `MFA_ENABLE_CONV3D_PAD_SLICE` | bool, `0` | Enable the measured channel pad/slice Conv3D experiment. |
 | `MFA_ENABLE_CONV3D_SPATIAL_PAD_SLICE` | bool, `0` | Enable the measured SeedVR2 108x132 spatial pad/slice route. |
 | `MFA_GNA_NAX_PRECOMPUTE_RANGE` | bool, `0` | Select the default-off `_pr1` GNA range-precompute variant. |
-| `MFA_SPARSE_FALLBACK_MAX_BYTES` | int bytes, `4294967296` | **2.64:** the largest bool keep-mask `[..., N, S]` a sparse SDPA fallback / SDPA-vjp leg may materialise. Above it the forward goes to the V6NAX sparse kernel when the kernel can serve the call (32-token symmetric blocks, aligned lengths, fp16/bf16, D∈{64,128}), else it raises before any allocation. |
-| `MFA_NAX_SPARSE_DENSITY_CEILING` | float, `0.30` | Further restrict the measured sparse route. It cannot add an unmeasured cell. |
+| `MFA_SPARSE_FALLBACK_MAX_BYTES` | int bytes, `4294967296` | **2.64:** the largest bool keep-mask `[..., N, S]` a sparse SDPA **forward** fallback may build (`flash_attention_sparse` and `sparse_attention_dispatch`). Above it the call goes to the V6NAX sparse kernel when the kernel can serve it (32-token blocks, aligned lengths, or square non-aligned via `auto_pad`; fp16/bf16, D∈{64,128}, M5+), else it raises before any allocation. The SDPA-vjp backward legs are not guarded (they build the bool mask, half the 2.63 float bias). |
+| `MFA_NAX_SPARSE_DENSITY_CEILING` | float, `0.30` | Further restrict the density-law sparse route (it cannot raise the measured ceilings). It does not affect the near-dense route (`MFA_SPARSE_D_DENSE_CUTOFF`) or the size-guard rescue. |
 | `MFA_SPARSE_NAX_EXTENDED` | bool, `0` | **Deprecated no-op since 2.64** (warns): the former Volet A extended envelope is the default sparse law — non-causal N ∈ [2048, 200000], any B·H (measured coverage {1, 4, 12, 16, 32, 40, 56}), fp16/bf16, density ceilings kept, non-causal qL ≠ kL; density ≥ `MFA_SPARSE_D_DENSE_CUTOFF` goes to V6NAX when the kernel can serve the call. Strict `0`/`1` still validated. |
-| `MFA_SPARSE_NAX_LEGACY_POLICY` | bool, `0` | **2.64, one release:** restore the complete 2.63 sparse NAX routing policy (N ∈ [4096, 8192], B·H ∈ {1, 4, 12}, square only, no quasi-dense NAX). |
-| `MFA_SPARSE_D_DENSE_CUTOFF` | float, `0.85` | Block density at/above which sparse routing diverts to the dense masked route (the block-skip wins nothing near-dense; caps wrapper overhead at ~zero sparsity, measured +0.9% at d≈1.0). Applies to both entry points; on the default path it only matters for values ≤ 0.30 (the default-path density ceiling), so its default 0.85 is a no-op there. Must be a finite number > 0 (> 1 disables the diversion); other values raise. |
+| `MFA_SPARSE_NAX_LEGACY_POLICY` | bool, `0` | **2.64, one release:** restore the complete 2.63 sparse NAX routing policy (N ∈ [4096, 8192], B·H ∈ {1, 4, 12}, square only, no near-dense NAX, no default 64→32 expansion). The bool fallbacks and the size guard (with its rescue) stay. |
+| `MFA_SPARSE_D_DENSE_CUTOFF` | float, `0.85` | **2.64 (B6):** near-dense threshold. At/above it a sparse call takes the V6NAX kernel whenever the kernel can serve it (non-causal, M5+, 32-token blocks, aligned or `auto_pad`, N in [2048, 200000], finite positive scale), else SDPA with a bool keep-mask; between the density ceiling and this cutoff the masked SDPA fallback runs. Both entry points. Must be a finite number > 0 (> 1 disables the near-dense route); other values raise. |
 | `MFA_REQUIRE_NAX` | bool, `0` | Raise when NAX was expected but the extension is unavailable. |
 | `MFA_SILENCE_NAX_WARNING` | bool, `0` | Suppress the one-time acceleration-unavailable warning. |
 | `MFA_PAGED_TRUST_INDICES` | bool, `0` | Skip host value validation for paged metadata; kernel bounds checks remain. |
 | `MFA_VARLEN_TRUST_METADATA` | bool, `0` | Skip host value validation for varlen metadata. |
 | `MLX_MFA_VERBOSE_DISPATCH` | bool, `0` | Print dispatch decisions. |
 | `MLX_MFA_HOOK_TELEMETRY` | enum, `summary` | `off`, `summary` or `verbose` counters for transparent hooks. |
-| `MLX_MFA_DISPATCH_TABLE` | path, unset | Load a JSON threshold table; path and file mtime key the loader cache. |
+| `MLX_MFA_DISPATCH_TABLE` | path, unset | Load a JSON threshold table (`calibrate_dispatch()` output); path and file mtime key the loader cache. **2.64:** its `dense_nax_tiles` rows (calibrated D=128 tile priors) route dense D=128 `auto` calls to NAX; a missing/malformed file or an invalid row raises `ValueError` naming the path. |
 
 The varlen opt-in accepts only B=1, D128, f16/bf16, equal Q/K segment
 boundaries, GQA factor 2/4/8, 20 or 24 segments and total length 35018-35250.

@@ -185,7 +185,7 @@ except these measured rows, which keep the NAX dense kernel with tile `32·32·2
 | bf16 | 4 | 4096–4608 |
 
 Each row beat SDPA by at least twice its measured noise floor at every measured point
-(`dispatch_policy.DENSE_TILE_TABLE`, evidence inline). `calibrate_dispatch()` can add
+inside its band (`dispatch_policy.DENSE_TILE_TABLE`, evidence inline). `calibrate_dispatch()` can add
 rows on your machine from a fixed list of priors, under the same rule
 (`MLX_MFA_DISPATCH_TABLE`). `MFA_DISABLE_V6_DENSE=1` turns every NAX dense route off.
 
@@ -200,14 +200,15 @@ exactly), dtype is f16/bf16, D is 64 or 128, and V matches Q/K, and:
   can serve the call (non-causal, aligned lengths, same N bounds);
 - **causal:** `qL == kL` and the exact cells of
   [`docs/reference/dispatch-map.md`](docs/reference/dispatch-map.md) (unchanged in 2.64);
-- non-aligned N with `auto_pad=True` reaches the same kernel with the pad keys masked
-  in-kernel.
+- a square (`qL == kL`) non-aligned N with `auto_pad=True` reaches the same kernel with
+  the pad keys masked in-kernel.
 
 Anything else — a 32×16 (STEEL-geometry) mask such as FlashVSR's, a density between
 the ceiling and the cutoff, a mask under 4,096 bytes — runs SDPA with a bool keep-mask.
-The STEEL sparse kernel is disabled on M3+ at D=128 for correctness. If that fallback's
-mask would exceed `MFA_SPARSE_FALLBACK_MAX_BYTES` (4 GiB), the call goes to the NAX
-kernel when it can serve it and is refused otherwise — never allocated.
+The STEEL sparse kernel is disabled on M3+ at D=128 for correctness. If that forward
+fallback's mask would exceed `MFA_SPARSE_FALLBACK_MAX_BYTES` (4 GiB), the call goes to the
+NAX kernel when it can serve it and is refused otherwise — never allocated (both entry
+points; the SDPA-vjp backward is not guarded).
 `MFA_SPARSE_NAX_LEGACY_POLICY=1` restores the 2.63 sparse policy for one release.
 
 ## Specialized examples

@@ -1147,6 +1147,11 @@ std::pair<mlx::core::array, mlx::core::array> v6_nax_forward(
     float scale, unsigned short nax_bq, unsigned short nax_bk,
     uint16_t nax_wm) {
   if (q.ndim() != 4) throw std::runtime_error("V6: Q must be 4D [B,H,N,D]");
+  // 2.64 review L2: refuse a partial explicit tile triple at graph-build time (eval_gpu
+  // re-checks), so the error surfaces at the call, not at a later mx.eval.
+  if ((nax_bq || nax_bk || nax_wm) && (!nax_bq || !nax_bk || !nax_wm))
+    throw std::invalid_argument(
+        "v6_nax_forward: explicit tiles require nonzero BQ, BK, and WM");
   int D = q.shape(3);
   if (D != 64 && D != 128 && D != 256)
     throw std::runtime_error("V6: D must be 64, 128, or expert-only 256");

@@ -5,9 +5,12 @@ MANDATORY before any release tag.  It:
   1. asserts the M5+ NAX fast path is genuinely LIVE (`has_nax()` True, not a
      silent SDPA fallback) — else the release's NAX perf/correctness claims are
      unverified;
-  2. captures which-binary **byteΔ fingerprints** for the key NAX-tier dispatch
-     cells (dense D128→NAX, dense D64→SDPA, sparse-sym→NAX, V6-split backward
-     engagement) — proving the intended kernels actually run;
+  2. captures which-binary **byteΔ fingerprints** for the key dispatch cells
+     (2.64: dense D128 auto→SDPA byte-identical, a D128 tile-table row→NAX, the
+     production dense shapes→SDPA, dense D64→SDPA, sparse non-causal→NAX,
+     sparse losing cell→SDPA, FlashVSR rectangular quasi-dense→NAX, V6-split
+     backward engagement) — proving the intended kernels actually run — plus
+     fp32-ORACLE errors for the cells a wrong-but-engaged kernel could pass;
   3. ARCHIVES the fingerprints (MLX / hardware / macOS / date stamped) for the
      release record.
 Exit non-zero — which BLOCKS the tag — if NAX is absent or any fingerprint check
@@ -26,6 +29,7 @@ import datetime
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -62,6 +66,35 @@ PROD_DENSE_SHAPES = {
 }
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _pyproject_version() -> str:
+    m = re.search(r'^version\s*=\s*"([^"]+)"',
+                  open(os.path.join(_REPO, "pyproject.toml"), encoding="utf-8").read(), re.M)
+    if not m:
+        raise RuntimeError("pyproject.toml has no version line")
+    return m.group(1)
+
+
+def _check_tested_package() -> None:
+    """The receipt certifies THIS checkout: refuse to stamp it with a package imported
+    from elsewhere (an installed wheel/sdist of another version) — Rule 8."""
+    pkg = os.path.dirname(os.path.realpath(mlx_mfa.__file__))
+    if os.path.realpath(os.path.join(_REPO, "mlx_mfa")) != pkg:
+        raise SystemExit(f"❌ GATE REFUSED: mlx_mfa imported from {pkg}, not this checkout "
+                         f"({_REPO}/mlx_mfa) — install editable into .venv and rerun.")
+    want = _pyproject_version()
+    if mlx_mfa.__version__ != want:
+        raise SystemExit(f"❌ GATE REFUSED: mlx_mfa.__version__={mlx_mfa.__version__!r} != "
+                         f"pyproject version {want!r}.")
+
+
+def _gen_normal(B, H, N, D, dtype=mx.float16):
+    """Unit-normal inputs (sharp softmax rows): a wrong-but-engaged kernel cannot hide
+    inside the byteΔ window the way it can on the near-uniform 0.1-scaled inputs."""
+    x = mx.random.normal((B, H, N, D)).astype(dtype)
+    mx.eval(x)
+    return x
 
 
 def _gen_dt(B, H, N, D, dtype):
@@ -106,6 +139,7 @@ def _masked_sdpa(q, k, v, block_mask, scale):
 
 def main() -> int:
     print("=== Pre-tag M5/NAX validation gate (§AA.6) ===")
+    _check_tested_package()
 
     # 1) NAX must be LIVE (not a silent SDPA fallback).
     ok, code = mlx_mfa.has_nax(reason=True)
@@ -132,14 +166,25 @@ def main() -> int:
                          "expected SDPA byteΔ == 0 (2.64 D1 delegation; B*H4 N2048 has no table row)"))
 
     # 2a') 2.64 A2: inside a measured tile-table row (32.32.2 D128 fp16 B*H16 N4096) auto
-    # keeps the NAX dense kernel — a real-kernel byteΔ.
-    q, k, v = _gen(2, 8, 4096, 128)
-    d = _delta(flash_attention(q, k, v, scale=sc, causal=False),
-               mx.fast.scaled_dot_product_attention(q, k, v, scale=sc))
+    # keeps the NAX dense kernel — a real-kernel byteΔ vs SDPA, AND an fp32-oracle error
+    # (unit-normal inputs) so a wrong-but-engaged kernel fails the gate.
+    q, k, v = (_gen_normal(2, 8, 4096, 128) for _ in range(3))
+    out = flash_attention(q, k, v, scale=sc, causal=False)
+    d = _delta(out, mx.fast.scaled_dot_product_attention(q, k, v, scale=sc))
     fps["dense_D128_table_32322_nax"] = d
     if not (1e-7 < d < 3e-2):
         failures.append(("dense_D128_table_32322_nax", d,
                          "expected NAX byteΔ in (1e-7, 3e-2) inside the 32.32.2 table row"))
+    with mx.stream(mx.cpu):
+        ref32 = mx.fast.scaled_dot_product_attention(
+            q.astype(mx.float32), k.astype(mx.float32), v.astype(mx.float32), scale=sc)
+        mx.eval(ref32)
+    d = _delta(out, ref32)
+    fps["dense_D128_table_32322_nax_oracle"] = d
+    if not (d < 1.5e-2):
+        failures.append(("dense_D128_table_32322_nax_oracle", d,
+                         "expected the table-row NAX output within 1.5e-2 of the fp32 CPU oracle"))
+    del q, k, v, out, ref32
 
     # 2a'') 2.64 A5: production dense shapes (devnotes/production_shapes_2026-10.md §0) —
     # auto must be BYTE-IDENTICAL to SDPA (correctness cells, no timing).
@@ -206,21 +251,36 @@ def main() -> int:
     # window mask at 32x32, density 0.999 >= the 0.85 cutoff) engages the V6NAX kernel
     # (rectangular non-causal + quasi-dense) — a real-kernel byteΔ vs the masked SDPA.
     Nq, Nk = 2048, 8192
-    q = _gen(1, 12, Nq, 128)[0]
-    k, v = _gen(1, 12, Nk, 128)[1:]
+    scR = 1.0 / (128 ** 0.5)          # NOT the D=64 `sc` left over from cell 2b
+    q = _gen_normal(1, 12, Nq, 128)
+    k, v = _gen_normal(1, 12, Nk, 128), _gen_normal(1, 12, Nk, 128)
     flat = mx.ones((12, 1, 16 * 64), dtype=mx.bool_)
     flat = mx.concatenate([flat[..., :-1], mx.zeros((12, 1, 1), dtype=mx.bool_)], axis=-1)
     mw = flat.reshape(12, 16, 64)
     mR = mx.repeat(mx.repeat(mw, 4, axis=-2), 4, axis=-1)          # 128-token windows -> 32x32
     em = mx.repeat(mx.repeat(mR.astype(mx.float32), 32, -2), 32, -1)
     biasR = mx.where(em > 0, mx.array(0.0), mx.array(-1e9, mx.float32)).astype(mx.float16)
-    refR = mx.fast.scaled_dot_product_attention(q, k, v, scale=sc, mask=biasR[None])
-    d = _delta(flash_attention_sparse(q, k, v, mR, scale=sc, causal=False), refR)
+    refR = mx.fast.scaled_dot_product_attention(q, k, v, scale=scR, mask=biasR[None])
+    outR = flash_attention_sparse(q, k, v, mR, scale=scR, causal=False)
+    d = _delta(outR, refR)
     fps["sparse_rect_quasi_dense_engage_nax"] = d
     if not (1e-7 < d < 3e-2):
         failures.append(("sparse_rect_quasi_dense_engage_nax", d,
                          "expected V6NAX byteΔ in (1e-7, 3e-2) on the FlashVSR rectangular "
                          "quasi-dense call (2.64 B5/B6); 0.0 => it fell back to SDPA"))
+    with mx.stream(mx.cpu):
+        keep = em > 0
+        ref32R = mx.fast.scaled_dot_product_attention(
+            q.astype(mx.float32), k.astype(mx.float32), v.astype(mx.float32),
+            scale=scR, mask=keep[None])
+        mx.eval(ref32R)
+    d = _delta(outR, ref32R)
+    fps["sparse_rect_quasi_dense_engage_nax_oracle"] = d
+    if not (d < 1.5e-2):
+        failures.append(("sparse_rect_quasi_dense_engage_nax_oracle", d,
+                         "expected the rectangular quasi-dense V6NAX output within 1.5e-2 of the "
+                         "fp32 CPU oracle (bool keep-mask)"))
+    del q, k, v, outR, refR, ref32R, em, biasR, keep
 
     # 2d) V6-split backward engagement (D=64 default-on): grad differs from SDPA-vjp.
     qd, kd, vd = _gen(1, 4, 2048, 64); scd = 1.0 / (64 ** 0.5)

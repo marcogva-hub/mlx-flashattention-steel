@@ -56,7 +56,8 @@ on 10/10 production D=128 shapes, never byte-identical to SDPA, 5–11 % slower 
 - `MFA_SPARSE_NAX_LEGACY_POLICY=1` → the 2.63 policy (one release). `MFA_SPARSE_NAX_EXTENDED` →
   deprecated no-op (warns).
 - Evidence: Volet A (16k–144k B1H40), DAY-3 Block 1 (B·H16, 204 cells, 0 loss), production shapes
-  Phase 2 (N 200 000, B·H 56: engaged, row-correct, 0.10–0.19× dense SDPA).
+  Phase 2 (N 200 000, B·H 56: engaged, row-correct; NAX time 0.10–0.19× of dense SDPA — M5 Max,
+  MLX 0.31.2, macOS 27.2, mlx-mfa 2.63.0 kernels, 2026-09-30, `devnotes/production_shapes_2026-10.md` §2).
 
 - *New evidence (out of scope):* N6144 cells the gate routes without a July datum — random d0.05
   B·H4 D128 **2.65×**, d0.30 B·H12 D128 **2.19×**, d0.25 B·H12 D64 **1.95×**

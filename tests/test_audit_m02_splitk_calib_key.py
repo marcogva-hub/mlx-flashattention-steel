@@ -122,7 +122,8 @@ def test_saved_payload_carries_schema_version(tmp_path, monkeypatch):
     out = tmp_path / "out.json"
     # head_dims=[] → no GPU crossover work; just exercise the save + schema stamp.
     dp.calibrate_dispatch(head_dims=[], save_path=str(out),
-                          calibrate_splitk=False, calibrate_kernel_configs=False)
+                          calibrate_splitk=False, calibrate_kernel_configs=False,
+                          calibrate_dense_tiles=False)
     data = json.loads(out.read_text())
     assert data.get("calibration_schema_version") == dp._CALIBRATION_SCHEMA_VERSION
 

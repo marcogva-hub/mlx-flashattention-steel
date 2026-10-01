@@ -11039,6 +11039,7 @@ class TestAutoCalibration:
             warmup=1,
             n_iters=2,
             calibrate_kernel_configs=True,
+            calibrate_dense_tiles=False,   # 2.64: tile priors are locked elsewhere
         )
         assert out.exists(), "calibrate_dispatch did not write JSON"
         import json
@@ -11057,6 +11058,7 @@ class TestAutoCalibration:
             warmup=1,
             n_iters=2,
             calibrate_kernel_configs=False,
+            calibrate_dense_tiles=False,   # 2.64: tile priors are locked elsewhere
         )
         import json
         data = json.loads(out.read_text())
@@ -11073,6 +11075,7 @@ class TestAutoCalibration:
             n_iters=1,
             calibrate_kernel_configs=False,
             calibrate_splitk=True,
+            calibrate_dense_tiles=False,   # 2.64: tile priors are locked elsewhere
         )
         import json
         data = json.loads(out.read_text())

@@ -62,3 +62,34 @@ def test_dispatch_map_matches_code():
     ]
     missing = [e for e in expect if e not in DMAP]
     assert not missing, missing
+
+
+ENV_VARS = (ROOT / "ENV_VARS.md").read_text(encoding="utf-8")
+
+
+def _env_row(name):
+    rows = [l for l in ENV_VARS.splitlines() if l.startswith(f"| `{name}` |")]
+    assert len(rows) == 1, f"ENV_VARS.md must have exactly one row for {name}: {rows}"
+    return rows[0]
+
+
+def _set(s):
+    return "{" + ", ".join(str(b) for b in sorted(s)) + "}"
+
+
+def test_env_vars_rows_match_code():
+    """Review M1 extension: the ENV_VARS statements of the 2.64 law / cutoff / guard /
+    legacy policy carry the code constants (defaults included)."""
+    law = f"[{ln.SPARSE_NAX_MIN_N}, {ln.SPARSE_NAX_MAX_N}]"
+    expect = {
+        "MFA_SPARSE_FALLBACK_MAX_BYTES": [f"`{att._SPARSE_FALLBACK_MAX_BYTES_DEFAULT}`"],
+        "MFA_NAX_SPARSE_DENSITY_CEILING": [f"`{ln.SPARSE_NAX_DENSITY_CEILING:.2f}`"],
+        "MFA_SPARSE_NAX_EXTENDED": [law, _set(ln.SPARSE_NAX_MEASURED_BH_COVERAGE)],
+        "MFA_SPARSE_D_DENSE_CUTOFF": [f"`{ln.SPARSE_NAX_D_DENSE_CUTOFF:.2f}`", law],
+        "MFA_SPARSE_NAX_LEGACY_POLICY": [f"[{ln._LEGACY_MIN_N}, {ln._LEGACY_MAX_N}]",
+                                         _set(ln._LEGACY_MEASURED_BH)],
+        "MFA_ENABLE_V6_DENSE": [f"({att._V6_DENSE_MIN_N_DEFAULT})"],
+    }
+    missing = {k: [e for e in v if e not in _env_row(k)] for k, v in expect.items()}
+    missing = {k: v for k, v in missing.items() if v}
+    assert not missing, missing

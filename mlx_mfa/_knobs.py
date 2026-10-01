@@ -81,8 +81,8 @@ KNOWN_KNOBS: frozenset[str] = frozenset({
     "MFA_SPARSE_NAX_LEGACY_POLICY",  # 2.64 B4: restore the 2.63 sparse NAX routing policy (one release)
     "MFA_SPARSE_NAX_EXTENDED",  # Volet A opt-in (M5+): extend the sparse route past
     #   the measured policy region (B·H/N/density); capacity still enforced. Default-off.
-    "MFA_SPARSE_D_DENSE_CUTOFF",  # Volet A: block density at/above which the extended
-    #   opt-in routes dense (default 0.85; caps wrapper overhead at ~zero sparsity).
+    "MFA_SPARSE_D_DENSE_CUTOFF",  # near-dense threshold (default 0.85); 2.64 B6: at/above
+    #   it the V6NAX kernel when it can serve the call, else SDPA + bool mask.
     "MFA_NO_PADDING",  # real C++ shader-generator knob (env_bool, csrc/mfa_env.hpp)
     "MFA_PAGED_TRUST_INDICES",  # perf opt-out: skip the host block_table/seq_lens
     #   value-range sync on the paged decode hot path (kernel still bounds-guards)
