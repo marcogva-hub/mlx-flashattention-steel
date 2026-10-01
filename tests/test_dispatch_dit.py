@@ -15,7 +15,8 @@ class TestDiTNonCausalDispatch:
     """Verify dispatch for non-causal DiT/UNet self-attention shapes."""
 
     def test_dit_large_n_routes_mfa(self):
-        """CogVideoX-class shape (N=70K, D=128) should route to MFA."""
+        """Synthetic N=70K D=128 shape (2.64: NOT a CogVideoX shape — CogVideoX1.5 is H48 D64)
+        should route to MFA under the legacy M1-M4 thresholds."""
         assert should_use_mfa(128, 70000, causal=False, is_m3_plus=False,
                               dtype=mx.float16)
 

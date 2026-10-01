@@ -35,8 +35,10 @@ SHAPES = [
     {"name": "SeedVR2-large", "B": 1, "H": 20, "N_q": 111375, "N_kv": 111375, "D": 128, "dtype": "float16"},
     # FlashVSR dense (the path that doesn't use sparse)
     {"name": "FlashVSR-dense", "B": 1, "H": 10, "N_q": 4096, "N_kv": 4096, "D": 64, "dtype": "float16"},
-    # CogVideoX / SparkVSR-class long-sequence
-    {"name": "CogVideoX", "B": 1, "H": 30, "N_q": 70200, "N_kv": 70200, "D": 128, "dtype": "float16"},
+    # CogVideoX1.5 (SparkVSR / Vivid-VR): H48 D64 joint attention (2.64: replaces the
+    # fictitious "CogVideoX H30 D128 N70200" — devnotes/production_shapes_2026-10.md §0)
+    {"name": "CogVideoX1.5-SparkVSR", "B": 1, "H": 48, "N_q": 4582, "N_kv": 4582, "D": 64, "dtype": "bfloat16"},
+    {"name": "CogVideoX1.5-VividVR", "B": 2, "H": 48, "N_q": 65762, "N_kv": 65762, "D": 64, "dtype": "float16"},
     # LTX-2 audio-to-video cross-attention (asymmetric N_q vs N_kv)
     {"name": "LTX2-cross", "B": 1, "H": 8, "N_q": 2048, "N_kv": 14000, "D": 64, "dtype": "float16"},
     # Smaller validation shapes

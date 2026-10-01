@@ -34,7 +34,10 @@ SELF_ATTN_SHAPES = [
     # DiT models (D=128)
     (1, 20, 26730, 128, "SeedVR2 DiT bs=29 (27x33x30)"),
     (1, 20, 111375, 128, "SeedVR2 DiT bs=497 (27x33x125)"),
-    (1, 30, 70200, 128, "CogVideoX (DOVE/STAR/SparkVSR/Vivid-VR)"),
+    # CogVideoX1.5-5B (DOVE/SparkVSR/Vivid-VR): H48 D64 joint attention, text prepended (226).
+    # (2.64: replaces the fictitious "H30 D128 N70200" — an unpatchified latent count.)
+    (1, 48, 4582, 64, "CogVideoX1.5 SparkVSR (17f 704x528 + 226 text)"),
+    (2, 48, 65762, 64, "CogVideoX1.5 Vivid-VR (CFG B2, 65536 + 226 text)"),
     (1, 40, 100000, 128, "Wan2.1 (FlashVSR) approx"),
     # UNet models (D=64 and D=128)
     (1, 8, 4096, 64, "UNet SD low-res (64x64) D=64"),
@@ -50,11 +53,12 @@ SELF_ATTN_SHAPES = [
 # === Cross-attention shapes (non-causal, N_q >> N_kv) ===
 CROSS_ATTN_SHAPES = [
     # (B, H_q, N_q, H_kv, N_kv, D, label)
-    (1, 30, 70200, 30, 226, 128, "CogVideoX text cross-attn (226 text tokens)"),
+    # (2.64: the former "CogVideoX text cross-attn" row is gone — CogVideoX has no text
+    #  cross-attention; its 226 text tokens join the self-attention above.)
     (1, 40, 100000, 40, 512, 128, "Wan2.1 text cross-attn"),
     (1, 8, 4096, 8, 77, 64, "SD/SDXL text cross-attn D=64"),
     (1, 8, 4096, 8, 77, 128, "SD/SDXL text cross-attn D=128"),
-    (1, 30, 70200, 30, 77, 128, "DiT x CLIP-77 extreme ratio"),
+    (1, 30, 70200, 30, 77, 128, "synthetic N_q 70200 x CLIP-77 extreme ratio"),
     # LTX-2 audio-video cross-attention
     (1, 32, 14000, 32, 2000, 64, "LTX-2 video->audio cross-attn"),
     (1, 32, 2000, 32, 14000, 64, "LTX-2 audio->video cross-attn"),

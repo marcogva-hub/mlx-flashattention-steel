@@ -27,7 +27,9 @@ ROOT = Path(__file__).resolve().parent.parent
 SHAPES = [
     {"name": "FlashVSR-dense", "B": 1, "H": 10, "Nq": 4096,   "Nkv": 4096,   "D": 64,  "R": 16, "C": 64, "SG": 16},
     {"name": "SeedVR2-small",  "B": 1, "H": 20, "Nq": 26730,  "Nkv": 26730,  "D": 128, "R": 16, "C": 48, "SG": 16},
-    {"name": "CogVideoX",      "B": 1, "H": 30, "Nq": 70200,  "Nkv": 70200,  "D": 128, "R": 16, "C": 48, "SG": 16},
+    # 2.64: real CogVideoX1.5 shapes (H48 D64) replace the fictitious "H30 D128 N70200".
+    {"name": "CogVideoX1.5-SparkVSR", "B": 1, "H": 48, "Nq": 4582,  "Nkv": 4582,  "D": 64,  "R": 16, "C": 64, "SG": 16},
+    {"name": "CogVideoX1.5-VividVR",  "B": 2, "H": 48, "Nq": 65762, "Nkv": 65762, "D": 64,  "R": 16, "C": 64, "SG": 16},
     {"name": "SeedVR2-large",  "B": 1, "H": 20, "Nq": 111375, "Nkv": 111375, "D": 128, "R": 16, "C": 48, "SG": 16},
     {"name": "LTX2-cross",     "B": 1, "H": 8,  "Nq": 2048,   "Nkv": 14000,  "D": 64,  "R": 16, "C": 64, "SG": 8},
 ]

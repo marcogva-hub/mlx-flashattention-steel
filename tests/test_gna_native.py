@@ -322,7 +322,9 @@ def test_gna_native_shape_mismatch():
 @requires_ext
 @pytest.mark.benchmark
 def test_gna_benchmark_cogvideox():
-    """CogVideoX shape: (13, 60, 90) = N=70200, window (4, 16, 16)."""
+    """Synthetic 3-D grid (13, 60, 90) = N=70200, window (4, 16, 16).  2.64: NOT a
+    CogVideoX attention shape (CogVideoX1.5 is H48 D64 dense joint attention) — the
+    historical label is kept only in the test id."""
     B, H, D = 1, 2, 128
     seq_shape = (13, 60, 90)
     window_size = (4, 16, 16)
@@ -368,7 +370,7 @@ def test_gna_benchmark_cogvideox():
     ref_ms = np.median(times_ref) * 1000
     speedup = ref_ms / nat_ms if nat_ms > 0 else float("inf")
 
-    print(f"\n  CogVideoX GNA benchmark:")
+    print(f"\n  synthetic 13x60x90 GNA benchmark:")
     print(f"    Native:   {nat_ms:.2f} ms")
     print(f"    Sparse:   {ref_ms:.2f} ms")
     print(f"    Speedup:  {speedup:.2f}x")
