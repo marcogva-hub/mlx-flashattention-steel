@@ -2,7 +2,88 @@
 
 All notable changes to mlx-mfa are documented here.
 
-## [2.63.0] — release candidate (not published)
+## [2.64.0] — release candidate (not published)
+
+Policy release: what the measurement campaigns proved becomes the default (decisions D1–D4,
+2026-10-01). Measured on M5 Max · macOS 27.2 · MLX 0.31.2. Evidence: the production-shapes campaign
+(10 production D=128 shapes, sparse to N=200 000 and B·H=56, the FlashVSR call shapes), DAY-3 runs
+A and B, and a re-measurement of the DAY-3 tile bands against the new default
+(`devnotes/release_2640.md`, archived off the tracked tree).
+
+### Changed (default behaviour — read before upgrading)
+- **Dense D=128 `flash_attention(..., backend="auto")` delegates to SDPA on M5.** f16/bf16 plain
+  self-attention now returns `mx.fast.scaled_dot_product_attention`'s output **byte for byte**.
+  Since F-2 it ran the NAX dense kernel, whose outputs differed from SDPA by about one bf16/fp16
+  ULP: **D=128 users will see their outputs change slightly — to exactly SDPA's.** Why: under
+  `auto` the NAX route ran on all 10 production D=128 shapes measured (LTX-2.3, Wan, LongCat,
+  MiniMax-H3, SeedVR2) and was 5–11 % slower than SDPA on 5 of them, at parity elsewhere. The only
+  exceptions are the measured tile rows below. `MFA_ENABLE_V6_DENSE=1` restores the 2.63 route.
+  Migration: `MFA_V6_DENSE_MIN_N` alone no longer turns NAX dense on — it is now the threshold of
+  `MFA_ENABLE_V6_DENSE`.
+- **Sparse: the former extended envelope is the default law** (`flash_attention_sparse`,
+  `sparse_attention_dispatch`, `sla_attention`). Non-causal calls take the V6NAX sparse kernel for
+  both lengths in [2048, 200000], any B·H (measured: 1, 4, 12, 16, 32, 40, 56), fp16/bf16, with the
+  density ceilings kept as measured (0.30; 0.05 for D128 B·H4 and 0.25 for D64 B·H12 below
+  N=8192). The causal policy is unchanged. 64-token masks are expanded exactly to 32-token
+  masks before `auto_pad`, so non-aligned LongCat BSA / VSA masks reach the padded kernel.
+  `MFA_SPARSE_NAX_LEGACY_POLICY=1` restores the complete 2.63 policy for this release.
+- **Non-causal `qL ≠ kL`** sparse calls take the V6NAX kernel (the kernel documents rectangular
+  non-causal; exact on the FlashVSR shapes 2048×8192 and 2560×10240). Causal `qL ≠ kL` stays
+  refused.
+- **Near-dense masks** (block density ≥ `MFA_SPARSE_D_DENSE_CUTOFF`, 0.85) take the V6NAX kernel
+  whenever it can serve the call; 2.63 sent them to the dense masked route.
+- **Sparse SDPA fallbacks and SDPA-vjp backward legs use a bool keep-mask**, never a float bias.
+  Byte-identical to the 2.63 operator on every query row with at least one visible key (outputs and
+  gradients, fp16/bf16, causal, per-head), with half to a quarter of the mask memory and no -inf
+  buffers. One row class changes: a query row with no visible key inside a causally reachable
+  block now returns zeros, the documented empty-row contract; 2.63's per-head forward returned NaN
+  there. A caller-supplied `precomputed_bias` stays float.
+- **The verbose dispatch log names the terminal that runs** (`MLX_MFA_VERBOSE_DISPATCH=1` prints
+  `terminal=<backend> reason=…`); policy predicates print `policy:` lines. 2.63 printed "-> SDPA
+  (… optimal)" before running the NAX dense kernel.
+
+### Added
+- `dispatch_policy.DENSE_TILE_TABLE`: dense D=128 rows that keep NAX with tile 32·32·2 (fp16/bf16
+  B·H 16 and 12 at N 2048–4096; fp16 B·H 4 at N 4096; bf16 B·H 4 at N 4096–4608; non-causal,
+  `Hq == Hk`). Each row beat SDPA by at least twice its measured noise floor at every measured
+  point; the guard is applied when the table is built, and the evidence is inline. A candidate that
+  fails is visible and rejected: 128·32·8, which beat NAX's old default tile but loses to SDPA.
+- On-device calibration of tile **priors** (never defaults): `calibrate_dispatch(…,
+  calibrate_dense_tiles=True)` measures `DENSE_TILE_PRIORS` against SDPA and writes only rows that
+  pass the same guard to `dense_nax_tiles`; `MLX_MFA_DISPATCH_TABLE` activates them, and a row
+  outside every prior or failing its guard is refused.
+- `_ext.v6_nax_forward(…, nax_bq, nax_bk, nax_wm)`: an explicit, atomic NAX tile triple per call
+  (source, pipeline key and grid), replacing env reads at lazy-eval time for public routes.
+- Knobs: `MFA_ENABLE_V6_DENSE`, `MFA_SPARSE_FALLBACK_MAX_BYTES` (default 4 GiB),
+  `MFA_SPARSE_NAX_LEGACY_POLICY`.
+- **Sparse fallback size guard**: a fallback mask above `MFA_SPARSE_FALLBACK_MAX_BYTES` is never
+  allocated. The call goes to the V6NAX kernel when it can serve it (aligned, or `auto_pad` for
+  square non-aligned calls), else it raises. The 2.63 default would have built a float bias of
+  about 1.8 TB for LongCat stage 3 (N=168 960, 32 heads).
+- `lcsa_nax.mask_density`: exact block density without a float32 copy of the mask.
+- M5 release gate: 12 production-shape delegation fingerprints (`auto` ≡ SDPA, byte-identical), a
+  tile-table cell, and a FlashVSR rectangular near-dense engagement cell.
+- README "When a Metal kernel engages on M5 (2.64)", locked to the code constants
+  (`tests/test_264_doc_code_lock.py`).
+
+### Fixed
+- Sparse routing no longer materialises a float32 copy of the per-head mask to compute its
+  density (five sites). Aligned LongCat stage-3 sparse peak memory went from 4.7 GB to 2.2 GB.
+- The two STEEL-geometry sparse fallbacks (M5; D=128 on M3+) now record their dispatch terminal.
+- Benches no longer model a non-existent CogVideoX shape (H30 D128 N70200): CogVideoX1.5 is
+  H48 D64 (SparkVSR N4582, Vivid-VR B2 N65762).
+
+### Deprecated
+- `MFA_SPARSE_NAX_EXTENDED`: a no-op that warns (strict 0/1 parsing kept). `sla_attention(extended=)`
+  has no routing effect; `extended=True` still raises before M5.
+- `MFA_SPARSE_NAX_LEGACY_POLICY` exists for this release only.
+
+### Not changed
+- `backend="mfa"` at D=128 on M5 still runs the STEEL primitive, not the NAX dense kernel; the NAX
+  dense kernel is reachable through `MFA_ENABLE_V6_DENSE=1`.
+- The causal sparse policy; the D=128 STEEL sparse kernel stays disabled on M3+ (correctness).
+
+## [2.63.0] — 2026-09-30
 
 Minor release: the block-sparse extended envelope (opt-in), Sparse-Linear Attention
 (`sla_attention`), and the hardening from the 2026-09 review of both. The dispatch-table update

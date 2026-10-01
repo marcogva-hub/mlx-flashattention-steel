@@ -395,7 +395,7 @@ auto outputs = array::make_arrays(
 
 ## Current status
 
-v2.63.0 (release candidate, not published — PyPI latest is 2.62.3, 2026-09-28). The RC adds, on top of 2.62.3: the block-sparse extended envelope (`auto_pad` with in-kernel pad-key masking via `kv_valid_len`, `MFA_SPARSE_NAX_EXTENDED`, `MFA_SPARSE_D_DENSE_CUTOFF`; all opt-in), `sla_attention` (differentiable, fp32 linear term), the bf16 1×1×1 conv3d fix and Python 3.10 test compatibility; the sparse dispatch table waits for NIGHT-3 (→ 2.64). Releases are sdist-only and gated by two M5 receipts in `release-gate/` (M5/NAX fingerprints + the `metal_kernel` × MLX-version matrix). See CHANGELOG.md for the feature matrix; the track table below is a historical v0–v2.27 record. This line is locked to the pyproject version by `tests/test_claude_md_current.py`.
+v2.64.0 (release candidate, not published — PyPI latest is 2.63.0, 2026-09-30). The policy release: dense D=128 `auto` delegates to SDPA byte-identically (except the measured 32·32·2 tile rows of `dispatch_policy.DENSE_TILE_TABLE`; `MFA_ENABLE_V6_DENSE=1` restores 2.63); the sparse extended envelope is the default law (non-causal N 2048–200000, any B·H, ceilings kept, qL ≠ kL, near-dense → V6NAX; `MFA_SPARSE_NAX_LEGACY_POLICY=1` restores 2.63); bool keep-masks + a size guard for every sparse SDPA leg; the verbose dispatch log names the terminal. Releases are sdist-only and gated by two M5 receipts in `release-gate/`. See CHANGELOG.md; the track table below is a historical v0–v2.27 record. This line is locked to the pyproject version by `tests/test_claude_md_current.py`.
 
 | Track | Description | Status |
 |-------|-------------|--------|
