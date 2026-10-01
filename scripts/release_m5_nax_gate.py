@@ -44,7 +44,32 @@ from mlx_mfa import flash_attention, flash_attention_sparse, get_device_info, ma
 SPARSE_ENGAGE_SPEC = {"B": 1, "H": 12, "N": 8192, "D": 128, "BT": 32,
                       "density": 0.15, "causal": False}
 
+# 2.64 A5: production dense shapes (devnotes/production_shapes_2026-10.md §0) whose
+# `auto` route must stay byte-identical to SDPA.  (B, H, N, D, dtype)
+PROD_DENSE_SHAPES = {
+    "LTX_s1_2052": (1, 32, 2052, 128, "bfloat16"),
+    "LTX_sot_6144": (1, 32, 6144, 128, "bfloat16"),
+    "LTX_s2_15984": (1, 32, 15984, 128, "bfloat16"),
+    "LTX_1080p_38760": (1, 32, 38760, 128, "bfloat16"),
+    "Wan_73899": (1, 40, 73899, 128, "bfloat16"),
+    "H3_38222": (1, 56, 38222, 128, "bfloat16"),
+    "LongCat_s1_37440": (1, 32, 37440, 128, "bfloat16"),
+    "LongCat_s3_84480": (1, 32, 84480, 128, "bfloat16"),
+    "LongCat_s3_168960": (1, 32, 168960, 128, "bfloat16"),
+    "SeedVR2_window_3226": (20, 20, 3226, 128, "bfloat16"),
+    "SparkVSR_4582_D64": (1, 48, 4582, 64, "bfloat16"),
+    "VividVR_65762_D64": (2, 48, 65762, 64, "float16"),
+}
+
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _gen_dt(B, H, N, D, dtype):
+    dt_ = {"float16": mx.float16, "bfloat16": mx.bfloat16}[dtype]
+    f = lambda: (mx.random.uniform(-1, 1, (B, H, N, D)) * 0.1).astype(dt_)
+    q, k, v = f(), f(), f()
+    mx.eval(q, k, v)
+    return q, k, v
 
 
 def _git_sha() -> str:
@@ -95,13 +120,40 @@ def main() -> int:
     fps: dict[str, float] = {}
     failures: list[tuple[str, float, str]] = []
 
-    # 2a) dense D=128 auto → NAX matmul2d (a real kernel: 1e-7 < byteΔ < 3e-2 vs SDPA).
+    # 2a) 2.64 D1: dense D=128 auto DELEGATES to SDPA (byteΔ == 0.0).  This cell was
+    # `dense_D128_auto_nax` (byteΔ ~1e-6) through 2.63 — the change is decision D1
+    # (production evidence: NAX ran on 10/10 production D=128 shapes, 5-11 % slower on 5).
     q, k, v = _gen(1, 4, 2048, 128); sc = 1.0 / (128 ** 0.5)
     d = _delta(flash_attention(q, k, v, scale=sc, causal=False),
                mx.fast.scaled_dot_product_attention(q, k, v, scale=sc))
-    fps["dense_D128_auto_nax"] = d
+    fps["dense_D128_auto_sdpa"] = d
+    if d != 0.0:
+        failures.append(("dense_D128_auto_sdpa", d,
+                         "expected SDPA byteΔ == 0 (2.64 D1 delegation; B*H4 N2048 has no table row)"))
+
+    # 2a') 2.64 A2: inside a measured tile-table row (32.32.2 D128 fp16 B*H16 N4096) auto
+    # keeps the NAX dense kernel — a real-kernel byteΔ.
+    q, k, v = _gen(2, 8, 4096, 128)
+    d = _delta(flash_attention(q, k, v, scale=sc, causal=False),
+               mx.fast.scaled_dot_product_attention(q, k, v, scale=sc))
+    fps["dense_D128_table_32322_nax"] = d
     if not (1e-7 < d < 3e-2):
-        failures.append(("dense_D128_auto_nax", d, "expected NAX byteΔ in (1e-7, 3e-2)"))
+        failures.append(("dense_D128_table_32322_nax", d,
+                         "expected NAX byteΔ in (1e-7, 3e-2) inside the 32.32.2 table row"))
+
+    # 2a'') 2.64 A5: production dense shapes (devnotes/production_shapes_2026-10.md §0) —
+    # auto must be BYTE-IDENTICAL to SDPA (correctness cells, no timing).
+    for name, (B_, H_, N_, D_, dt_) in PROD_DENSE_SHAPES.items():
+        q, k, v = _gen_dt(B_, H_, N_, D_, dt_)
+        sp = 1.0 / (D_ ** 0.5)
+        d = _delta(flash_attention(q, k, v, scale=sp, causal=False),
+                   mx.fast.scaled_dot_product_attention(q, k, v, scale=sp))
+        key = f"prod_dense_{name}_auto_sdpa"
+        fps[key] = d
+        if d != 0.0:
+            failures.append((key, d, f"production shape {name} {(B_, H_, N_, D_, dt_)}: auto != SDPA"))
+        del q, k, v
+        mx.clear_cache()
 
     # 2b) dense D=64 auto → SDPA (byteΔ == 0: NAX loses at D=64, must stay SDPA).
     q, k, v = _gen(1, 4, 2048, 64); sc = 1.0 / (64 ** 0.5)
@@ -136,6 +188,9 @@ def main() -> int:
     # non-causal) MUST delegate to dense SDPA (byteΔ == 0.0).  07-13 re-map found this
     # cell 0/36 winning (density 0.51 > every ceiling).  Recorded so the receipt PROVES
     # the delegation — turning the Phase-3 incident into permanent coverage.
+    # 2.64: N=2048 is inside the promoted law (MIN_N 2048) but 0.51 is above the kept
+    # 0.30 ceiling and below the 0.85 cutoff -> still the SDPA fallback (now a BOOL mask,
+    # byte-identical to the additive bias on rows with a visible key).
     Nd, Dd = 2048, 128; scD = 1.0 / (Dd ** 0.5)
     q, k, v = _gen(1, 4, Nd, Dd)
     maskD = make_causal_block_mask(Nd, head_dim=Dd)
@@ -146,6 +201,26 @@ def main() -> int:
         failures.append(("sparse_D128_nc_delegate_sdpa", d,
                          "expected measured-losing sparse cell (N=2048/density~0.51) to DELEGATE to "
                          "SDPA (byteΔ == 0.0); nonzero ⇒ it engaged a kernel it should not"))
+
+    # 2d') 2.64 B5/B6: the FlashVSR steady-chunk call (q 2048 x k 8192, B1 H12 D128 fp16,
+    # window mask at 32x32, density 0.999 >= the 0.85 cutoff) engages the V6NAX kernel
+    # (rectangular non-causal + quasi-dense) — a real-kernel byteΔ vs the masked SDPA.
+    Nq, Nk = 2048, 8192
+    q = _gen(1, 12, Nq, 128)[0]
+    k, v = _gen(1, 12, Nk, 128)[1:]
+    flat = mx.ones((12, 1, 16 * 64), dtype=mx.bool_)
+    flat = mx.concatenate([flat[..., :-1], mx.zeros((12, 1, 1), dtype=mx.bool_)], axis=-1)
+    mw = flat.reshape(12, 16, 64)
+    mR = mx.repeat(mx.repeat(mw, 4, axis=-2), 4, axis=-1)          # 128-token windows -> 32x32
+    em = mx.repeat(mx.repeat(mR.astype(mx.float32), 32, -2), 32, -1)
+    biasR = mx.where(em > 0, mx.array(0.0), mx.array(-1e9, mx.float32)).astype(mx.float16)
+    refR = mx.fast.scaled_dot_product_attention(q, k, v, scale=sc, mask=biasR[None])
+    d = _delta(flash_attention_sparse(q, k, v, mR, scale=sc, causal=False), refR)
+    fps["sparse_rect_quasi_dense_engage_nax"] = d
+    if not (1e-7 < d < 3e-2):
+        failures.append(("sparse_rect_quasi_dense_engage_nax", d,
+                         "expected V6NAX byteΔ in (1e-7, 3e-2) on the FlashVSR rectangular "
+                         "quasi-dense call (2.64 B5/B6); 0.0 => it fell back to SDPA"))
 
     # 2d) V6-split backward engagement (D=64 default-on): grad differs from SDPA-vjp.
     qd, kd, vd = _gen(1, 4, 2048, 64); scd = 1.0 / (64 ** 0.5)
