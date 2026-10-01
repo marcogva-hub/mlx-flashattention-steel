@@ -1,6 +1,6 @@
 {
   "release_version": "2.64.0",
-  "git_sha": "b5cdd09d939fd8bb093e56051a8ce9c31d4c83ce",
+  "git_sha": "c83ae96c5e6b624a95dd0a8101b1f16b82b3b885",
   "mlx_version": "0.31.2",
   "device": "Apple M5 Max",
   "chip": "M5",
