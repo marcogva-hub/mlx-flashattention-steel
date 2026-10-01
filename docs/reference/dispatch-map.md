@@ -1,6 +1,6 @@
 # Runtime Dispatch Map
 
-**Stamp:** 2026-07-13, M5 Max, MLX 0.31.2, macOS 27 beta. Routes marked β3 require stable-macOS revalidation.
+**Stamp:** 2026-10-01 (2.64 policy release), M5 Max, MLX 0.31.2, macOS 27.2. Earlier cells: 2026-07-13 (β3). Routes marked β3 require stable-macOS revalidation.
 
 Terminal names come from runtime dispatch tracing and are the authoritative engagement vocabulary.
 
@@ -8,7 +8,9 @@ Terminal names come from runtime dispatch tracing and are the authoritative enga
 
 | Public input | Terminal |
 |---|---|
-| Plain self-attention, D=128, f16/bf16, NAX available, compatible features | `nax_dense` |
+| Plain self-attention, D=128, f16/bf16, NAX available, compatible features | `sdpa` (2.64: byte-identical delegation) |
+| … inside a `DENSE_TILE_TABLE` row (32·32·2: fp16/bf16 B·H 16 and 12 N 2048–4096; fp16 B·H 4 N 4096; bf16 B·H 4 N 4096–4608; non-causal, Hq == Hk) | `nax_dense` (tile 32·32·2) |
+| … with `MFA_ENABLE_V6_DENSE=1`, N ≥ `MFA_V6_DENSE_MIN_N` (2048) | `nax_dense` (default tile) |
 | D=64 plain forward | `sdpa` unless a decode carveout applies |
 | D=512 | `sdpa` |
 | fp32 or an unsupported feature combination | `sdpa` |
@@ -22,11 +24,24 @@ Terminal names come from runtime dispatch tracing and are the authoritative enga
 | qL=16, D=64, GQA in {4,8,16}, non-causal, f16/bf16, 16384<=kL<=65536 | `mfa_primitive` |
 | Every adjacent cell | `sdpa` |
 
-## Sparse β3 gate
+## Sparse gate (2.64 law)
 
-`v6nax_sparse` requires self-attention, effective BT32, D in {64,128}, and one row from the tables below. BT64 is expanded 2x2 and then tested against the same gate.
+`v6nax_sparse` requires effective BT32 (BT64 is expanded exactly 2x2, also before
+`auto_pad`), D in {64,128}, f16/bf16, V matching Q/K, a mask of at least 4096 bytes.
 
-### Non-causal
+### Non-causal (2.64 law)
+
+| N (both lengths) | qL vs kL | B·H | Density ceiling |
+|---|---|---|---:|
+| 2048..200000 | qL ≠ kL allowed | any (measured: 1, 4, 12, 16, 32, 40, 56) | 0.30 |
+| < 8192 | — | 4 (D=128) | 0.05 |
+| < 8192 | — | 12 (D=64) | 0.25 |
+| 2048..200000, density ≥ `MFA_SPARSE_D_DENSE_CUTOFF` (0.85) | aligned | any | — (quasi-dense → `v6nax_sparse` whenever the kernel can serve the call) |
+
+Between the ceiling and the cutoff: `sdpa` (bool keep-mask). `MFA_SPARSE_NAX_LEGACY_POLICY=1`
+restores the 2.63 table below.
+
+### Non-causal, 2.63 policy (legacy knob only)
 
 | Dtype | N | B·H | D | Density ceiling |
 |---|---:|---:|---:|---:|
@@ -36,7 +51,7 @@ Terminal names come from runtime dispatch tracing and are the authoritative enga
 | fp16 | 4096..8192 | 4 | 128 | 0.05 |
 | bf16 | 4096..8192 | 12 | 128 | 0.30 |
 
-### Causal
+### Causal (unchanged in 2.64; qL == kL)
 
 | Dtype | N | B·H | D | Density ceiling |
 |---|---:|---:|---:|---:|
@@ -45,7 +60,7 @@ Terminal names come from runtime dispatch tracing and are the authoritative enga
 | fp16 | 8192 | 12 | 64,128 | 0.30 |
 | bf16 | 4096 | 4 | 128 | 0.10 |
 
-Unlisted sparse cells use `sdpa` or `scalar_fallback`. BT values outside {32,64} cannot reach V6 NAX.
+Unlisted sparse cells use `sdpa` with a bool keep-mask (never a float bias; size-guarded by `MFA_SPARSE_FALLBACK_MAX_BYTES`) or `scalar_fallback`. BT values outside {32,64} cannot reach V6 NAX. On M3+ at D=128 the STEEL sparse kernel is disabled (correctness); STEEL-geometry (32×16) masks take `sdpa`.
 
 ## GNA
 

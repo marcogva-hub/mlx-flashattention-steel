@@ -19,7 +19,7 @@ V6 is a pure NAX family. The former simdgroup-within-V6 alternative is not a pro
 
 ## M5 auto-route
 
-Plain dense D=128 f16/bf16 self-attention can select terminal `nax_dense` when NAX is available and no incompatible feature is present. D=64 plain forward remains SDPA unless another narrow policy, such as decode, applies.
+Plain dense D=128 f16/bf16 self-attention delegates to SDPA (terminal `sdpa`, byte-identical) since 2.64; it selects `nax_dense` only inside a measured `DENSE_TILE_TABLE` row (tile 32·32·2) or under `MFA_ENABLE_V6_DENSE=1`. D=64 plain forward remains SDPA unless another narrow policy, such as decode, applies.
 
 The NAX forward is wrapped in a custom VJP whose backward uses SDPA-VJP unless the separate backward policy selects `v6_split_backward`.
 

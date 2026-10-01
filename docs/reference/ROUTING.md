@@ -16,72 +16,53 @@ Terminals: `nax_dense` (dense NAX matmul2d), `v6nax_sparse` (sparse NAX), `mfa_p
 
 ## 1. Dense forward — `flash_attention(..., backend="auto")`
 
-| Eligibility (source) | Terminal | Measured 30/07 |
+**2.64 (decision D1, 2026-10-01): dense D=128 delegates to SDPA.** The 2.63 `nax_dense` route ran
+on 10/10 production D=128 shapes, never byte-identical to SDPA, 5–11 % slower on 5/10
+(`devnotes/production_shapes_2026-10.md` §1, archived).
+
+| Eligibility (source) | Terminal | Evidence |
 |---|---|---|
-| D=128, f16/bf16, N ≥ `MFA_V6_DENSE_MIN_N` (default **2048**), plain self-attn, no bias/window/dropout/attn-weights, matching dtype/seqlen | **`nax_dense`** | parity-or-win **1.067× / 1.071×** (D128 N4096 fp16) — `benchmarks/results/reval_A_dense_public_order{A,B}.json`; **1.08×** — `reval_E_dense_*` |
+| D=128, f16/bf16, plain self-attn, no bias/window/dropout/attn-weights, matching dtype/seqlen | **`sdpa`** — `_fallback_sdpa` = `mx.fast.scaled_dot_product_attention`, byte-identical | production shapes (2.64 M5 gate `prod_dense_*_auto_sdpa` = 0.0) |
+| … inside a `dispatch_policy.DENSE_TILE_TABLE` row (non-causal, `Hq == Hk`, exact B·H) | **`nax_dense`**, tile **32·32·2** | each row ≥ 2× its noise floor vs SDPA at every measured point (inline evidence; tile_vs_sdpa 2026-10-01) |
+| … with `MFA_ENABLE_V6_DENSE=1`, N ≥ `MFA_V6_DENSE_MIN_N` (default 2048) | `nax_dense` (default tile BQ64/BK32/WM4) | the 2.63 route, explicit |
 | D=64 plain forward | `sdpa` (unless a decode carveout applies) | — |
 | D=512 · fp32 · unsupported feature combo | `sdpa` | — |
 
-- Predicate: `mlx_mfa/attention.py:52` (`_V6_DENSE_MIN_N_DEFAULT = 2048`), `:521` (reads
-  `MFA_V6_DENSE_MIN_N`), `:537` (`return ("nax_dense", "auto D128 N>=v6_min_n")`). Below N=2048,
-  D=64/512, fp32 → `sdpa` (`docs/dispatch-map.md:11-14`).
-- Kernel default tile BQ64/BK32/WM4 (`csrc/mfa_v6_nax_primitive.cpp`; scale baked, cache-keyed).
-- Opt-out: `MFA_DISABLE_V6_DENSE=1` → `sdpa`. Keep-all-paths: `MFA_V6_DENSE_MIN_N=0` forces NAX at all N.
+- Predicate: `mlx_mfa/attention.py` `_select_dense_backend` → `("sdpa" | "nax_dense", reason, tile)`;
+  table + guard + priors: `mlx_mfa/dispatch_policy.py` (`DENSE_TILE_CANDIDATES` →
+  `DENSE_TILE_TABLE`, `DENSE_TILE_PRIORS`, `calibrate_dense_tile_priors`).  The tile is passed per
+  call through the `v6_nax_forward` binding into the primitive (never via env at lazy-eval time).
+- `MFA_DISABLE_V6_DENSE=1` → `sdpa` everywhere (wins over the table and the knob).
+- Verbose: `MLX_MFA_VERBOSE_DISPATCH=1` prints `terminal=<backend>` at the terminal that runs;
+  policy predicates print `policy:` lines only (the 2.63 "-> SDPA optimal" line preceded a
+  `nax_dense` terminal).
 
 ## 2. Sparse gate — `flash_attention_sparse(...)`
 
-Authoritative predicate: `mlx_mfa/lcsa_nax.py:350-402` (`_nax_sparse_route_viable`), constants
-`:336-345`. Routes to **`v6nax_sparse`** ONLY inside the β3-measured region (unmeasured B·H and
-causal cells are deliberately **not** interpolated). Common gates (`:355-366`): `block_tile ∈ {32}`,
-dtype f16/bf16, D ∈ {64,128}, `qL == kL`, `qL ≤ 8192`. `bh = B·H`.
+**2.64 (decision D3): the former extended envelope is the default law.** Authoritative predicate:
+`mlx_mfa/lcsa_nax.py` `_nax_sparse_route_viable` (capacity, then the law); near-dense:
+`_quasi_dense_nax_viable`; exact BT64→32 expansion: `_expand_bt64_exact` (before `auto_pad`).
 
-**Extended envelope (opt-in, `MFA_SPARSE_NAX_EXTENDED=1`, M5+ only — Volet A Phase 1).** Predicate:
-`_sparse_extended_enabled()` short-circuits `_nax_sparse_route_viable` once the CAPACITY gate passes
-(`block_tile==32`, f16/bf16, D∈{64,128}, `qL==kL`), bypassing the POLICY bounds only (B·H allowlist,
-`MIN_N`/`MAX_N`, density ceiling) — never capacity. Reach: **B·H free, N ≤ 144 288 after `auto_pad`,
-density free**, with `flash_attention_sparse(auto_pad=True)` padding a non-aligned N == S to a ×32
-multiple, masking the pad keys in-kernel (`kv_valid_len`) and slicing back; the result equals
-`auto_pad=False`, and N ≠ S is never padded (review 2026-09 U1/U2). Near-dense (`density ≥
-MFA_SPARSE_D_DENSE_CUTOFF`, default 0.85) diverts to the dense masked route (block-skip wins nothing
-there; wrapper overhead +0.9% @ d≈1.0). Outside the v1 matrix the opt-in **raises** (pre-M5,
-D=256/512, BT≠32) — no silent scalar downgrade. Off (default) → routing byte-identical. Evidence:
-hardened public-path measurement (M5 Max, macOS 27, MLX 0.31.2) — sliding d0.10 **8.2–9.3×** vs dense
-across N=16 384–144 288, d0.50 **1.6–2.0×** (≥1.6× every N), real LCSA **10.2–34.9×**; all engaged.
-Correctness re-proven 2026-09-28 with per-row magnitude gates (`test_sparse_extended_envelope.py`,
-`test_u1_auto_pad.py`; `benchmarks/blocksparse_reproof_b4.py` at N 4 100–144 279 proves correctness
-at scale, while the unit locks prove the before/after difference). The first, cosine-gated evidence
-missed U1. Ratio data: `benchmarks/results/blocksparse_voletA/campaign_20260812.jsonl`.
+- Capacity: `block_tile == 32`, f16/bf16, D ∈ {64,128}, V matching Q/K, mask ≥ 4096 B.
+- Non-causal law: both lengths in [`SPARSE_NAX_MIN_N`=2048, `SPARSE_NAX_MAX_N`=200000], `qL ≠ kL`
+  allowed (B5; kernel-documented, exact on the FlashVSR shapes), any B·H (coverage
+  `SPARSE_NAX_MEASURED_BH_COVERAGE` = {1,4,12,16,32,40,56}), density ≤ 0.30; below N=8192 the
+  measured lower ceilings hold (D128 B·H4 0.05, D64 B·H12 0.25).
+- Near-dense (B6): density ≥ `MFA_SPARSE_D_DENSE_CUTOFF` (0.85) → `v6nax_sparse` whenever the kernel
+  can serve the call (non-causal, aligned or `auto_pad`, law N bounds), else `sdpa` + bool mask.
+- Causal: unchanged 2.63 cells, `qL == kL` (U2).
+- Fallbacks: SDPA with a **bool** keep-mask (B2), empty rows → zeros per element row, size guard
+  `MFA_SPARSE_FALLBACK_MAX_BYTES` (4 GiB; B1: rescue to the NAX kernel or refuse, never allocate).
+- `MFA_SPARSE_NAX_LEGACY_POLICY=1` → the 2.63 policy (one release). `MFA_SPARSE_NAX_EXTENDED` →
+  deprecated no-op (warns).
+- Evidence: Volet A (16k–144k B1H40), DAY-3 Block 1 (B·H16, 204 cells, 0 loss), production shapes
+  Phase 2 (N 200 000, B·H 56: engaged, row-correct, 0.10–0.19× dense SDPA).
 
-### Non-causal (`lcsa_nax.py:385-402`)
-| N | B·H | D | density ≤ | source |
-|---:|---:|---:|---:|---|
-| 8192 | 1, 4, 12 | 64, 128 | 0.30 | `:391-393` (won all 36 fp16 cells) |
-| 4096–8192 | 12 | 128 | 0.30 | `:396-397` |
-| 4096–8192 | 12 | 64 | 0.25 | `:398-399` (`_D64_BH12_DENSITY_CEILING`) |
-| 4096–8192 | 4 | 128 | 0.05 | `:400-401` (`_D128_BH4_DENSITY_CEILING`) |
-| 4096–8192 | 12 | 128 | 0.30 | bf16 only region (`:385-388`) |
-
-### Causal (`lcsa_nax.py:370-380`)
-| N | B·H | D | density ≤ | source |
-|---:|---:|---:|---:|---|
-| 4096 | 4 | 128 | 0.10 | `:376` (`_CAUSAL_BH4_DENSITY_CEILING`) |
-| 4096 | 12 | 128 | 0.30 | `:378` |
-| 8192 | 12 | 64, 128 | 0.30 | `:380` |
-| 4096 (bf16) | 4 | 128 | 0.10 | `:372-374` |
-
-**Measured 30/07 by region** (`benchmarks/results/reval_C_*`, `reval_B_causal_*`):
-- Non-causal N8192 B·H12 D128 wins **up to 8.23×** — density-dependent (sliding-window and low
-  random density win biggest, higher block density less): sw128 **8.23× / 8.22×**
-  `reval_C_sw128_nc_fp16_b1_h12_n8192_d128_*`; sw256 7.25/7.30; random d0.05 6.70/6.70; sw512
-  6.33/5.38; d0.15 4.88/3.97; d0.30 2.50/2.94.
-- N8192 B·H12 D64 up to **4.58×**; B·H4 D128 up to **4.15×** (`reval_C_*_b1_h4_*`, `*_d64_*`).
-- Causal D128 N8192 B·H12 d0.30 **3.83× / 3.86×** — `reval_B_causal_*` (re-measure of the July
-  locked **3.8833× / 3.8485×**; confirms the 3.85–3.88× band).
 - *New evidence (out of scope):* N6144 cells the gate routes without a July datum — random d0.05
   B·H4 D128 **2.65×**, d0.30 B·H12 D128 **2.19×**, d0.25 B·H12 D64 **1.95×**
   (`reval_C_*_n6144_*`).
 
-**Explicit delegations → `sdpa`** (the `return False` branches; `lcsa_nax.py:309`
+**2.63 delegations → `sdpa` — since 2.64 only under `MFA_SPARSE_NAX_LEGACY_POLICY=1`** (the `return False` branches of `_route_viable_263`; historical line refs; `lcsa_nax.py:309`
 "measured-loss or unmeasured cells delegate to SDPA"):
 - **N=2048 (all)** — `qL` outside `[4096, 8192]` (range gate `:394-395`; `SPARSE_NAX_MIN_N=4096` `:336`).
 - **B·H=1 below N=8192** — B·H=1 routes only via the N=8192 all-cells branch (`:391-393`); at
@@ -163,9 +144,9 @@ channel-tail convs (C_in/C_out < 32), bf16 (fp16-only gate — locked inert).
 ## 8. Knobs & opt-ins
 
 Full registry: [`ENV_VARS.md`](../../ENV_VARS.md). Status of the routing knobs referenced above:
-`MFA_V6_DENSE_MIN_N` (default 2048), `MFA_DISABLE_V6_DENSE` (opt-out), `MFA_DISABLE_V6_BACKWARD`
+`MFA_ENABLE_V6_DENSE` (2.64: explicit dense NAX), `MFA_V6_DENSE_MIN_N` (its threshold, default 2048), `MFA_DISABLE_V6_DENSE` (opt-out), `MFA_DISABLE_V6_BACKWARD`
 (opt-out; D64 bwd default-on), `MFA_ENABLE_VARLEN_NAX` (opt-in, default-off), `MFA_ENABLE_CONV3D_*`
-(conv opt-ins, default-off). The sparse gate's DEFAULT is the `_nax_sparse_route_viable`
-predicate alone; `MFA_SPARSE_NAX_EXTENDED=1` (opt-in, default-off, M5+) widens it to the full
-measured-capability envelope, and `MFA_SPARSE_D_DENSE_CUTOFF` (default 0.85) diverts near-dense to
-the dense route — see §2 (Extended envelope).
+(conv opt-ins, default-off). The sparse gate's DEFAULT is the 2.64 law (§2);
+`MFA_SPARSE_NAX_LEGACY_POLICY=1` restores the 2.63 policy for one release, `MFA_SPARSE_NAX_EXTENDED`
+is a deprecated no-op, `MFA_SPARSE_D_DENSE_CUTOFF` (default 0.85) sets the near-dense threshold, and
+`MFA_SPARSE_FALLBACK_MAX_BYTES` (4 GiB) bounds the SDPA fallback's mask.

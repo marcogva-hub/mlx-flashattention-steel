@@ -161,17 +161,54 @@ the automatic choice.
 
 | Public surface | Native route | Deliberate fallback |
 |---|---|---|
-| dense `flash_attention` | M5 D128 self-attention from the code gate; narrow decode carveouts; legacy STEEL tiers | unsupported features, D512 and cells where MLX is selected |
-| `flash_attention_sparse` | measured BT32 V6 NAX cells; BT64 may expand to BT32 | all unmeasured sparse cells use masked SDPA or scalar coverage |
+| dense `flash_attention` | M5: the measured D128 tile-table rows only (below); narrow decode carveouts; legacy STEEL tiers | everything else on M5 is `mx.fast.scaled_dot_product_attention`, byte-identical (2.64); `MFA_ENABLE_V6_DENSE=1` restores the 2.63 NAX dense route |
+| `flash_attention_sparse` | the V6 NAX sparse kernel under the law below (BT32; BT64 expands exactly to BT32) | SDPA with a **bool** keep-mask (never a float bias), size-guarded |
 | `flash_attention_gna` | 3D f16/bf16: D128 at N>=2048, D64 at N>=4096 | STEEL or sparse representation outside that envelope; `MFA_DISABLE_GNA_NATIVE=1` is the escape |
 | `flash_attention_varlen` | STEEL packed-varlen; narrow V6 NAX route only with `MFA_ENABLE_VARLEN_NAX=1` | fp32, D512 and other unsupported inputs use per-segment split/concat |
 | dense backward | D64 V6 split backward from N>=2048 unless disabled | D128 is opt-in; unsupported cases use SDPA VJP |
 | sparse backward | hybrid or full-native only under explicit controls | SDPA VJP is the default outside the opt-in contract |
 | `mx.conv_general` hook | eligible Conv3D calls on M5 use NAX/MPP | original MLX function for every rejected shape |
 
-The exact sparse cells are intentionally narrow. They are listed in
-[`docs/reference/dispatch-map.md`](docs/reference/dispatch-map.md), not inferred
-from a broad density rule.
+### When a Metal kernel engages on M5 (2.64)
+
+**Dense, D=128, f16/bf16, plain self-attention, `backend="auto"`.** SDPA, byte-identical,
+except these measured rows, which keep the NAX dense kernel with tile `32·32·2`
+(non-causal, `Hq == Hk`, exact `B·H`):
+
+| dtype | B·H | N |
+|---|---:|---|
+| fp16 | 16 | 2048–4096 |
+| fp16 | 12 | 2048–4096 |
+| fp16 | 4 | 4096 |
+| bf16 | 16 | 2048–4096 |
+| bf16 | 12 | 2048–4096 |
+| bf16 | 4 | 4096–4608 |
+
+Each row beat SDPA by at least twice its measured noise floor at every measured point
+(`dispatch_policy.DENSE_TILE_TABLE`, evidence inline). `calibrate_dispatch()` can add
+rows on your machine from a fixed list of priors, under the same rule
+(`MLX_MFA_DISPATCH_TABLE`). `MFA_DISABLE_V6_DENSE=1` turns every NAX dense route off.
+
+**Sparse (`flash_attention_sparse`, `sparse_attention_dispatch`).** The V6 NAX sparse
+kernel runs when the block mask is at 32-token granularity (64-token masks are expanded
+exactly), dtype is f16/bf16, D is 64 or 128, and V matches Q/K, and:
+
+- **non-causal:** both lengths in [2,048, 200,000] (`qL ≠ kL` allowed), any `B·H`
+  (measured: 1, 4, 12, 16, 32, 40, 56), block density ≤ 0.30 — ≤ 0.05 for D128 `B·H` 4 and
+  ≤ 0.25 for D64 `B·H` 12 when N < 8,192, where those lower ceilings were measured;
+- **near-dense (density ≥ 0.85, `MFA_SPARSE_D_DENSE_CUTOFF`):** the kernel whenever it
+  can serve the call (non-causal, aligned lengths, same N bounds);
+- **causal:** `qL == kL` and the exact cells of
+  [`docs/reference/dispatch-map.md`](docs/reference/dispatch-map.md) (unchanged in 2.64);
+- non-aligned N with `auto_pad=True` reaches the same kernel with the pad keys masked
+  in-kernel.
+
+Anything else — a 32×16 (STEEL-geometry) mask such as FlashVSR's, a density between
+the ceiling and the cutoff, a mask under 4,096 bytes — runs SDPA with a bool keep-mask.
+The STEEL sparse kernel is disabled on M3+ at D=128 for correctness. If that fallback's
+mask would exceed `MFA_SPARSE_FALLBACK_MAX_BYTES` (4 GiB), the call goes to the NAX
+kernel when it can serve it and is refused otherwise — never allocated.
+`MFA_SPARSE_NAX_LEGACY_POLICY=1` restores the 2.63 sparse policy for one release.
 
 ## Specialized examples
 

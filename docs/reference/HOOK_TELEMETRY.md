@@ -31,7 +31,7 @@ Importing the package installs supported hooks unless `MFA_DISABLE_AUTO_HOOKS=1`
 
 ## Dispatch traces
 
-Attention routes use a separate dispatch trace. Set `MLX_MFA_VERBOSE_DISPATCH=1` and inspect the emitted terminal name. Examples include `nax_dense`, `v6nax_sparse`, `gna_v6nax`, `varlen_v6nax`, `mfa_primitive`, `v6_split_backward`, `sdpa`, and `varlen_split_concat`.
+Attention routes use a separate dispatch trace. Set `MLX_MFA_VERBOSE_DISPATCH=1`: every routing terminal prints `terminal=<backend> reason=<reason>` (2.64 — the line names the terminal that actually runs; policy predicates print `policy:` lines, never a route). Examples include `nax_dense`, `v6nax_sparse`, `gna_v6nax`, `varlen_v6nax`, `mfa_primitive`, `v6_split_backward`, `sdpa`, and `varlen_split_concat`.
 
 A benchmark must fingerprint both candidate and baseline. Source inspection alone is insufficient because public gates can replace a lower-level candidate with a fallback.
 
