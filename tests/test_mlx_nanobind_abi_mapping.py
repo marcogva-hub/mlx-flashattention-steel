@@ -43,6 +43,10 @@ EXPECTED = {
     "0.32.0": "v2.13.0",  # NB_INTERNALS 20
     "0.32.1": "v2.13.0",  # NB_INTERNALS 20
     "0.32.2": "v2.15.0",  # NB_INTERNALS 21
+    # VERIFIED 2026-11-13 at source: MLX v0.32.3 CMakeLists -> nanobind v3.0.1;
+    # MLX v0.32.4 -> nanobind v3.1.0; both tags' src/nb_internals.h = NB_INTERNALS 22.
+    "0.32.3": "v3.0.1",  # NB_INTERNALS 22
+    "0.32.4": "v3.1.0",  # NB_INTERNALS 22
 }
 
 _CMAKE = shutil.which("cmake")
@@ -118,7 +122,7 @@ def test_mapped_release_resolves_to_verified_tag(version, tag, tmp_path):
         "0.31.2rc1",                 # release candidate
         "0.31.2.1",                  # four components
         "0.32.00",                   # malformed patch
-        "0.32.3",                    # future release, not yet verified
+        "0.32.5",                    # future release, not yet verified
         "0.31.1",                    # below the ABI floor (nanobind v18)
         "",                          # empty
     ],
@@ -144,7 +148,7 @@ def test_specifier_is_capped_at_top_of_table():
     """BLD-01 class: nothing newer than the verified table may be resolvable."""
     build, _ = _pyproject_specifiers()
     top = max(Version(v) for v in EXPECTED)
-    for candidate in ("0.32.3", "0.33.0", "0.40.0", "1.0.0"):
+    for candidate in ("0.32.5", "0.33.0", "0.40.0", "1.0.0"):
         v = Version(candidate)
         assert v > top
         assert v not in build, f"{candidate} would be picked by build isolation but is unmapped"

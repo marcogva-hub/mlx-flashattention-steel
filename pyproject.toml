@@ -8,7 +8,7 @@
 # shipped an unmapped release. Raise the cap only together with a new verified table entry
 # (tests/test_mlx_nanobind_abi_mapping.py locks cap == top of table, in BOTH lists).
 # 0.31.2 is the floor: MLX 0.31.0/0.31.1 ship older nanobind (v17/v18).
-requires = ["scikit-build-core>=0.9", "mlx>=0.31.2,<=0.32.2"]
+requires = ["scikit-build-core>=0.9", "mlx>=0.31.2,<=0.32.4"]
 build-backend = "scikit_build_core.build"
 
 [project]
@@ -35,7 +35,7 @@ classifiers = [
   "Programming Language :: Python :: 3.14",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-dependencies = ["mlx>=0.31.2,<=0.32.2", "numpy>=1.23"]  # MUST equal the [build-system] mlx specifier (floor = nanobind-ABI floor, cap = top of csrc/cmake/MlxNanobindAbi.cmake); numpy floored (L6 audit 2026-06-21)
+dependencies = ["mlx>=0.31.2,<=0.32.4", "numpy>=1.23"]  # MUST equal the [build-system] mlx specifier (floor = nanobind-ABI floor, cap = top of csrc/cmake/MlxNanobindAbi.cmake); numpy floored (L6 audit 2026-06-21)
 
 [project.urls]
 "Source Code" = "https://github.com/marcogva-hub/mlx-flashattention-steel"
