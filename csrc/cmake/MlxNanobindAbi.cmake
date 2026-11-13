@@ -30,6 +30,12 @@ set(MFA_MLX_NANOBIND_ABI_TABLE
   "0.32.0=v2.13.0=20"
   "0.32.1=v2.13.0=20"
   "0.32.2=v2.15.0=21"
+  # MLX 0.32.3 CMakeLists FetchContent_Declare(nanobind) GIT_TAG v3.0.1;
+  # nanobind v3.0.1 src/nb_internals.h NB_INTERNALS_VERSION 22 (verified 2026-11-13)
+  "0.32.3=v3.0.1=22"
+  # MLX 0.32.4 CMakeLists FetchContent_Declare(nanobind) GIT_TAG v3.1.0;
+  # nanobind v3.1.0 src/nb_internals.h NB_INTERNALS_VERSION 22 (verified 2026-11-13)
+  "0.32.4=v3.1.0=22"
 )
 
 # mfa_resolve_nanobind_tag(<mlx_version> <out_var>)
